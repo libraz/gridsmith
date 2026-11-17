@@ -1,0 +1,943 @@
+import { describe, expect, it } from 'vitest';
+import type { Vec } from '../../src/geom/primitives.js';
+import { distance, signedDistance } from '../../src/geom/primitives.js';
+import { contains } from '../../src/geom/region.js';
+import type {
+  ResolvedCircle,
+  ResolvedElement,
+  ResolvedModel,
+  ResolvedPoint,
+  ResolvedPolygon,
+  ResolvedRepeat,
+  ResolvedTangentCircle,
+  ResolveError,
+} from '../../src/resolve/resolve.js';
+import { resolveSpec } from '../../src/resolve/resolve.js';
+import type { SpecInput } from '../../src/spec/schema.js';
+import { specSchema } from '../../src/spec/schema.js';
+
+type ShapeInput = Record<string, unknown>;
+
+const build = (
+  shapes: ShapeInput[],
+  paint: unknown[] = [{ stroke: [shapes[0]?.id ?? 'a'], width: 0.125 }],
+  extra: Record<string, unknown> = {},
+): SpecInput =>
+  ({
+    version: 1,
+    mode: 'figure',
+    grid: { divisions: 4 },
+    shapes,
+    paint,
+    ...extra,
+  }) as SpecInput;
+
+const run = (input: SpecInput) => resolveSpec(specSchema.parse(input));
+
+const model = (input: SpecInput): ResolvedModel => {
+  const res = run(input);
+  if (!res.ok) {
+    throw new Error(`expected ok: ${JSON.stringify(res.errors)}`);
+  }
+  return res.model;
+};
+
+const failure = (input: SpecInput): ResolveError[] => {
+  const res = run(input);
+  if (res.ok) {
+    throw new Error('expected errors');
+  }
+  return res.errors;
+};
+
+const get = <T extends ResolvedElement['type']>(
+  m: ResolvedModel,
+  id: string,
+  type: T,
+): Extract<ResolvedElement, { type: T }> => {
+  const el = m.byId.get(id);
+  if (el === undefined || el.type !== type) {
+    throw new Error(`no ${type} ${id}`);
+  }
+  return el as Extract<ResolvedElement, { type: T }>;
+};
+
+const nearestOf = (candidates: Vec[], near: Vec): Vec => {
+  const sorted = [...candidates].sort((a, b) => distance(a, near) - distance(b, near));
+  const best = sorted[0];
+  if (best === undefined) {
+    throw new Error('no candidates');
+  }
+  return best;
+};
+
+const area = (loop: Vec[]): number =>
+  loop.reduce((sum, a, i) => {
+    const b = loop[(i + 1) % loop.length] as Vec;
+    return sum + (a.x * b.y - b.x * a.y) / 2;
+  }, 0);
+
+const circle = (id: string, cx: number, cy: number, r: number | string): ShapeInput => ({
+  id,
+  type: 'circle',
+  center: [cx, cy],
+  r,
+});
+
+describe('intersect selection', () => {
+  // Candidates from closed forms, chosen by brute force.
+  const ccA = { x: 0, y: 0, r: 3 };
+  const ccB = { x: 4, y: 0, r: 2 };
+  const ccX = (ccA.r ** 2 - ccB.r ** 2 + 16) / 8;
+  const ccY = Math.sqrt(ccA.r ** 2 - ccX ** 2);
+
+  it.each([
+    [3, 1],
+    [3, -1],
+    [0, 7],
+    [-5, -2],
+  ])('circle-circle near (%d, %d) matches the brute-force nearest', (nx, ny) => {
+    const m = model(
+      build([
+        circle('a', 0, 0, 3),
+        circle('b', 4, 0, 2),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'], near: [nx, ny] } },
+      ]),
+    );
+    const want = nearestOf(
+      [
+        { x: ccX, y: ccY },
+        { x: ccX, y: -ccY },
+      ],
+      { x: nx, y: ny },
+    );
+    const p = get(m, 'p', 'point');
+    expect(p.x).toBeCloseTo(want.x, 9);
+    expect(p.y).toBeCloseTo(want.y, 9);
+  });
+
+  it.each([
+    [3, 3],
+    [-3, 0],
+    [1, -4],
+  ])('circle-line near (%d, %d) matches the brute-force nearest', (nx, ny) => {
+    const h = Math.sqrt(9 - 1);
+    const m = model(
+      build([
+        circle('a', 0, 0, 3),
+        { id: 'l', type: 'line', from: [-5, 1], to: [5, 1] },
+        { id: 'p', type: 'point', at: { intersect: ['l', 'a'], near: [nx, ny] } },
+      ]),
+    );
+    const want = nearestOf(
+      [
+        { x: h, y: 1 },
+        { x: -h, y: 1 },
+      ],
+      { x: nx, y: ny },
+    );
+    const p = get(m, 'p', 'point');
+    expect(p.x).toBeCloseTo(want.x, 9);
+    expect(p.y).toBeCloseTo(want.y, 9);
+  });
+
+  it('line-line yields the crossing, with near optional', () => {
+    const m = model(
+      build([
+        { id: 'l1', type: 'line', from: [-4, -4], to: [4, 4] },
+        { id: 'l2', type: 'line', from: [-4, 2], to: [4, 2] },
+        { id: 'p', type: 'point', at: { intersect: ['l1', 'l2'] } },
+      ]),
+    );
+    const p = get(m, 'p', 'point');
+    expect(p.x).toBeCloseTo(2, 9);
+    expect(p.y).toBeCloseTo(2, 9);
+  });
+
+  it('accepts a missing near when circles touch at one point', () => {
+    const m = model(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 3, 0, 1),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'] } },
+      ]),
+    );
+    expect(get(m, 'p', 'point').x).toBeCloseTo(2, 9);
+  });
+
+  it('rejects a missing near with two candidates, listing both', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 3),
+        circle('b', 4, 0, 2),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'] } },
+      ]),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.id).toBe('p');
+    expect(errors[0]?.message).toContain('near');
+    expect(errors[0]?.message).toContain('1.45237');
+    expect(errors[0]?.message).toContain('-1.45237');
+  });
+
+  it('rejects a tie with both candidate coordinates and distances', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 3),
+        circle('b', 4, 0, 2),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'], near: [3, 0] } },
+      ]),
+    );
+    expect(errors[0]?.message).toContain('2.625');
+    expect(errors[0]?.message).toContain('1.45237');
+    expect(errors[0]?.message).toContain('-1.45237');
+    expect(errors[0]?.message).toContain('distance');
+  });
+
+  it('suggests the on-circle notation when circles coincide', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 0, 0, 2),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'] } },
+      ]),
+    );
+    expect(errors[0]?.message).toContain('"on"');
+  });
+
+  it('reports the measured centre distance when circles do not meet', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 1),
+        circle('b', 10, 0, 1),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'b'] } },
+      ]),
+    );
+    expect(errors[0]?.message).toContain('centre distance 10');
+    expect(errors[0]?.message).toContain('2');
+  });
+
+  it('rejects parallel lines and a line missing a circle', () => {
+    const parallel = failure(
+      build([
+        { id: 'l1', type: 'line', from: [-4, 0], to: [4, 0] },
+        { id: 'l2', type: 'line', from: [-4, 3], to: [4, 3] },
+        { id: 'p', type: 'point', at: { intersect: ['l1', 'l2'] } },
+      ]),
+    );
+    expect(parallel[0]?.message).toContain('parallel');
+    expect(parallel[0]?.message).toContain('3');
+    const miss = failure(
+      build([
+        circle('a', 0, 0, 1),
+        { id: 'l', type: 'line', from: [-4, 5], to: [4, 5] },
+        { id: 'p', type: 'point', at: { intersect: ['a', 'l'] } },
+      ]),
+    );
+    expect(miss[0]?.message).toContain('distance 5');
+  });
+
+  it('evaluates a near that is itself an intersect', () => {
+    const m = model(
+      build([
+        circle('a', 0, 0, 3),
+        circle('b', 4, 0, 2),
+        { id: 'l1', type: 'line', from: [-4, -4], to: [4, 4] },
+        { id: 'l2', type: 'line', from: [-4, 2], to: [4, 2] },
+        {
+          id: 'p',
+          type: 'point',
+          at: { intersect: ['a', 'b'], near: { intersect: ['l1', 'l2'] } },
+        },
+      ]),
+    );
+    expect(get(m, 'p', 'point').y).toBeGreaterThan(0);
+  });
+});
+
+describe('tangent_circle selection', () => {
+  // Candidate centres from closed-form offset-curve intersections.
+  const circleCircle = (a: Vec, ra: number, b: Vec, rb: number): Vec[] => {
+    const d = distance(a, b);
+    if (d > ra + rb || d < Math.abs(ra - rb) || d === 0) {
+      return [];
+    }
+    const along = (d * d + ra * ra - rb * rb) / (2 * d);
+    const h = Math.sqrt(Math.max(0, ra * ra - along * along));
+    const ux = (b.x - a.x) / d;
+    const uy = (b.y - a.y) / d;
+    return [
+      { x: a.x + ux * along - uy * h, y: a.y + uy * along + ux * h },
+      { x: a.x + ux * along + uy * h, y: a.y + uy * along - ux * h },
+    ];
+  };
+
+  it.each([
+    [2, 5],
+    [2, -5],
+    [-1, 0.2],
+  ])('circle-circle near (%d, %d) matches the brute-force nearest', (nx, ny) => {
+    const A = { x: 0, y: 0 };
+    const B = { x: 4, y: 0 };
+    const all = [
+      ...circleCircle(A, 2 + 1, B, 1 + 1),
+      ...circleCircle(A, Math.abs(2 - 1), B, 1 + 1),
+    ];
+    const m = model(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 4, 0, 1),
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [nx, ny] },
+      ]),
+    );
+    const want = nearestOf(all, { x: nx, y: ny });
+    const t = get(m, 't', 'tangent_circle');
+    expect(t.circle.cx).toBeCloseTo(want.x, 9);
+    expect(t.circle.cy).toBeCloseTo(want.y, 9);
+    expect(t.circle.r).toBe(1);
+    expect(t.contacts.map((c) => c.kind)).toEqual(['external', 'external']);
+    expect(t.contacts.map((c) => c.to)).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    [3, 0],
+    [-3, 0.5],
+    [1, 8],
+  ])('circle-line near (%d, %d) matches the brute-force nearest', (nx, ny) => {
+    const all: Vec[] = [];
+    for (const y of [1, -1]) {
+      for (const R of [3, 1]) {
+        const dy = y - 3;
+        if (Math.abs(dy) <= R) {
+          const dx = Math.sqrt(R * R - dy * dy);
+          all.push({ x: dx, y }, { x: -dx, y });
+        }
+      }
+    }
+    const m = model(
+      build([
+        circle('a', 0, 3, 2),
+        { id: 'l', type: 'line', from: [-5, 0], to: [5, 0] },
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'l'], near: [nx, ny] },
+      ]),
+    );
+    const want = nearestOf(all, { x: nx, y: ny });
+    const t = get(m, 't', 'tangent_circle');
+    expect(t.circle.cx).toBeCloseTo(want.x, 9);
+    expect(t.circle.cy).toBeCloseTo(want.y, 9);
+    const contact = t.contacts[1];
+    expect(contact?.kind).toBe('line');
+    expect(contact?.y).toBeCloseTo(0, 9);
+    expect(contact?.x).toBeCloseTo(want.x, 9);
+  });
+
+  it.each([
+    [2, -3],
+    [-2, 3],
+    [0.5, 0.5],
+  ])('line-line near (%d, %d) matches the brute-force nearest', (nx, ny) => {
+    const all: Vec[] = [
+      { x: 1, y: 1 },
+      { x: 1, y: -1 },
+      { x: -1, y: 1 },
+      { x: -1, y: -1 },
+    ];
+    const m = model(
+      build([
+        { id: 'h', type: 'line', from: [-5, 0], to: [5, 0] },
+        { id: 'v', type: 'line', from: [0, -5], to: [0, 5] },
+        { id: 't', type: 'tangent_circle', r: 1, to: ['h', 'v'], near: [nx, ny] },
+      ]),
+    );
+    const want = nearestOf(all, { x: nx, y: ny });
+    const t = get(m, 't', 'tangent_circle');
+    expect(t.circle.cx).toBeCloseTo(want.x, 9);
+    expect(t.circle.cy).toBeCloseTo(want.y, 9);
+  });
+
+  it('records internal contact kinds', () => {
+    const m = model(
+      build([
+        circle('a', 0, 0, 4),
+        circle('b', 4, 0, 1),
+        { id: 't', type: 'tangent_circle', r: 2, to: ['a', 'b'], near: [1.4, 1.4] },
+      ]),
+    );
+    const t: ResolvedTangentCircle = get(m, 't', 'tangent_circle');
+    const dA = distance({ x: t.circle.cx, y: t.circle.cy }, { x: 0, y: 0 });
+    expect(Math.abs(dA - 2)).toBeLessThan(1e-9);
+    expect(t.contacts.map((c) => c.kind)).toEqual(['internal', 'external']);
+    expect(t.circle.cy).toBeGreaterThan(0);
+  });
+
+  it('rejects a tie with both candidates', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 4, 0, 2),
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [2, 0] },
+      ]),
+    );
+    expect(errors[0]?.id).toBe('t');
+    expect(errors[0]?.message).toContain('2.23607');
+    expect(errors[0]?.message).toContain('-2.23607');
+  });
+
+  it('suggests the on-circle notation for infinite candidates', () => {
+    const concentric = failure(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 0, 0, 4),
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [3, 0] },
+      ]),
+    );
+    expect(concentric[0]?.message).toContain('"on"');
+    const parallel = failure(
+      build([
+        { id: 'l1', type: 'line', from: [-5, 0], to: [5, 0] },
+        { id: 'l2', type: 'line', from: [-5, 2], to: [5, 2] },
+        { id: 't', type: 'tangent_circle', r: 1, to: ['l1', 'l2'], near: [0, 1] },
+      ]),
+    );
+    expect(parallel[0]?.message).toContain('"on"');
+  });
+
+  it('reports the measured centre distance when nothing touches both', () => {
+    const errors = failure(
+      build([
+        circle('a', 0, 0, 1),
+        circle('b', 20, 0, 1),
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [10, 0] },
+      ]),
+    );
+    expect(errors[0]?.message).toContain('centre distance 20');
+    expect(errors[0]?.message).toContain('4');
+  });
+});
+
+describe('error collection', () => {
+  it('reports a root cause first and its dependents after, in one result', () => {
+    const errors = failure(
+      build(
+        [
+          circle('a', 0, 0, 2),
+          circle('far', 10, 0, 1),
+          { id: 'p', type: 'point', at: { intersect: ['a', 'far'], near: [0, 0] } },
+          { id: 'q', type: 'point', at: 'p' },
+          { id: 'c', type: 'circle', center: 'q', r: 1 },
+          circle('fine', 1, 1, 1),
+          { id: 'ring', type: 'circle', center: 'p', r: 'c.r' },
+        ],
+        [{ stroke: ['c', 'fine'], width: 0.125 }],
+      ),
+    );
+    expect(errors.map((e) => e.id)).toEqual(['p', 'q', 'c', 'ring', 'paint[0]']);
+    expect(errors[0]?.dependsOn).toBeUndefined();
+    expect(errors[1]).toMatchObject({ id: 'q', dependsOn: 'p' });
+    expect(errors[2]).toMatchObject({ id: 'c', dependsOn: 'q' });
+    expect(errors[3]).toMatchObject({ id: 'ring', dependsOn: 'p' });
+    expect(errors[4]).toMatchObject({ id: 'paint[0]', dependsOn: 'c' });
+    expect(errors[1]?.message).toContain('"p"');
+  });
+
+  it('reports several independent failures together, roots before dependents', () => {
+    const errors = failure(
+      build(
+        [
+          { id: 'l', type: 'line', from: [1, 1], to: [1, 1] },
+          circle('big', 0, 0, 'R*16*2'),
+          { id: 'dep', type: 'circle', center: [0, 0], r: 'big.r/2' },
+          { id: 'ok', type: 'circle', center: [0, 0], r: 1 },
+        ],
+        [{ stroke: ['ok'], width: 'R/16/16/16' }],
+      ),
+    );
+    expect(errors.map((e) => e.id)).toEqual(['l', 'big', 'paint[0]', 'dep']);
+    expect(errors[3]?.dependsOn).toBe('big');
+  });
+});
+
+describe('length evaluation', () => {
+  it('evaluates R and <id>.r bases and labels them', () => {
+    const m = model(
+      build(
+        [
+          circle('a', 0, 0, 'R/2'),
+          circle('b', 0, 0, 'a.r*sqrt2'),
+          circle('c', 0, 0, 2.5),
+          circle('d', 0, 0, 'R*phi/2'),
+        ],
+        [{ stroke: ['a', 'b', 'c', 'd'], width: 'R/16' }],
+      ),
+    );
+    expect(get(m, 'a', 'circle').circle.r).toBe(2);
+    expect(get(m, 'a', 'circle').label).toBe('R/2');
+    expect(get(m, 'b', 'circle').circle.r).toBeCloseTo(2 * Math.SQRT2, 12);
+    expect(get(m, 'c', 'circle').label).toBe('2.5');
+    expect(get(m, 'd', 'circle').circle.r).toBeCloseTo((4 * ((1 + Math.sqrt(5)) / 2)) / 2, 12);
+    expect(m.strokes[0]?.width).toBe(0.25);
+    expect(m.strokes[0]?.widthLabel).toBe('R/16');
+    expect(m.R).toBe(4);
+    expect(m.canvasHalf).toBe(5);
+  });
+
+  it('honours the grid margin and divisions', () => {
+    const m = model(
+      build([circle('a', 0, 0, 'R')], undefined, { grid: { divisions: 8, margin: 2 } }),
+    );
+    expect(m.canvasHalf).toBe(10);
+    expect(m.divisions).toBe(8);
+    expect(m.margin).toBe(2);
+    expect(get(m, 'a', 'circle').circle.r).toBe(8);
+  });
+
+  it('rejects an evaluated radius outside 0.05 to 64', () => {
+    const small = failure(build([circle('a', 0, 0, 'R/16/16')]));
+    expect(small[0]).toMatchObject({ id: 'a' });
+    expect(small[0]?.message).toContain('0.015625');
+    const large = failure(build([circle('a', 0, 0, 'R*16*2')]));
+    expect(large[0]?.message).toContain('128');
+  });
+
+  it('rejects an evaluated width outside 0.005 to 8', () => {
+    const errors = failure(build([circle('a', 0, 0, 2)], [{ stroke: ['a'], width: 'R*16*16' }]));
+    expect(errors[0]?.id).toBe('paint[0]');
+    expect(errors[0]?.message).toContain('width');
+    const thin = failure(build([circle('a', 0, 0, 2)], [{ stroke: ['a'], width: 'R/16/16/16' }]));
+    expect(thin[0]?.message).toContain('0.000976563');
+  });
+
+  it('rejects a derived coordinate beyond 64 but accepts 64', () => {
+    const edge = model(
+      build([circle('a', 60, 0, 4), { id: 'p', type: 'point', at: { on: 'a', angle: 0 } }]),
+    );
+    expect(get(edge, 'p', 'point').x).toBeCloseTo(64, 9);
+    const errors = failure(
+      build([circle('a', 63, 0, 4), { id: 'p', type: 'point', at: { on: 'a', angle: 0 } }]),
+    );
+    expect(errors[0]).toMatchObject({ id: 'p' });
+    expect(errors[0]?.message).toContain('67');
+  });
+});
+
+describe('points', () => {
+  it('places a point on a circle by angle, modulo 360', () => {
+    const m = model(
+      build([
+        circle('c', 1, 1, 2),
+        { id: 'p', type: 'point', at: { on: 'c', angle: 90 } },
+        { id: 'q', type: 'point', at: { on: 'c', angle: 450 } },
+        { id: 'o', type: 'point', at: 'c' },
+      ]),
+    );
+    const p: ResolvedPoint = get(m, 'p', 'point');
+    expect(p.x).toBeCloseTo(1, 12);
+    expect(p.y).toBeCloseTo(3, 12);
+    expect(get(m, 'q', 'point').y).toBeCloseTo(3, 12);
+    expect(get(m, 'o', 'point')).toMatchObject({ x: 1, y: 1 });
+  });
+
+  it('keeps elements in declaration order and by id', () => {
+    const m = model(build([circle('a', 0, 0, 1), circle('b', 0, 0, 2)]));
+    expect(m.elements.map((e) => e.id)).toEqual(['a', 'b']);
+    expect(m.byId.get('b')).toBe(m.elements[1]);
+  });
+});
+
+describe('degenerate shapes', () => {
+  it('rejects a line with coincident endpoints', () => {
+    const errors = failure(build([{ id: 'l', type: 'line', from: [1, 2], to: [1, 2] }]));
+    expect(errors[0]?.id).toBe('l');
+  });
+
+  it('rejects coincident adjacent points, including last and first', () => {
+    const adjacent = failure(
+      build([
+        {
+          id: 's',
+          type: 'points',
+          through: [
+            [0, 0],
+            [1, 0],
+            [1, 0],
+            [0, 1],
+          ],
+        },
+      ]),
+    );
+    expect(adjacent[0]?.id).toBe('s');
+    const wrap = failure(
+      build([
+        {
+          id: 's',
+          type: 'points',
+          through: [
+            [0, 0],
+            [1, 0],
+            [1, 1],
+            [0, 0],
+          ],
+        },
+      ]),
+    );
+    expect(wrap[0]?.id).toBe('s');
+  });
+
+  it('rejects collinear points', () => {
+    const errors = failure(
+      build([
+        {
+          id: 's',
+          type: 'points',
+          through: [
+            [0, 0],
+            [1, 1],
+            [2, 2],
+            [3, 3],
+          ],
+        },
+      ]),
+    );
+    expect(errors[0]?.message).toContain('collinear');
+  });
+
+  it('accepts a triangle', () => {
+    const m = model(
+      build([
+        {
+          id: 's',
+          type: 'points',
+          through: [
+            [0, 0],
+            [2, 0],
+            [0, 2],
+          ],
+        },
+      ]),
+    );
+    expect(get(m, 's', 'points').loops[0]).toHaveLength(3);
+  });
+});
+
+describe('polygon', () => {
+  const polygon = (n: number, step: number, rotate = 90): ResolvedPolygon =>
+    get(
+      model(build([circle('c', 0, 0, 3), { id: 'g', type: 'polygon', in: 'c', n, step, rotate }])),
+      'g',
+      'polygon',
+    );
+
+  it('builds a hexagram as two triangles of one orientation', () => {
+    const g = polygon(6, 2);
+    expect(g.loops).toHaveLength(2);
+    expect(g.loops.map((l) => l.length)).toEqual([3, 3]);
+    expect(g.vertices).toHaveLength(6);
+    const [a, b] = g.loops.map(area);
+    expect(Math.sign(a ?? 0)).toBe(Math.sign(b ?? 0));
+    expect(g.loops[0]?.[0]?.x).toBeCloseTo(0, 12);
+    expect(g.loops[0]?.[0]?.y).toBeCloseTo(3, 12);
+    expect(g.loops[1]?.[0]?.x).toBeCloseTo(3 * Math.cos((150 * Math.PI) / 180), 12);
+  });
+
+  it('builds a pentagram as one loop of five vertices', () => {
+    const g = polygon(5, 2);
+    expect(g.loops).toHaveLength(1);
+    expect(g.loops[0]).toHaveLength(5);
+    expect(g.loops[0]?.[1]?.x).toBeCloseTo(3 * Math.cos((234 * Math.PI) / 180), 12);
+  });
+
+  it('builds an 8/2 star as two squares', () => {
+    const g = polygon(8, 2);
+    expect(g.loops.map((l) => l.length)).toEqual([4, 4]);
+    const [a, b] = g.loops.map(area);
+    expect(Math.sign(a ?? 0)).toBe(Math.sign(b ?? 0));
+  });
+
+  it('builds a plain polygon on the circle', () => {
+    const g = polygon(7, 1, 0);
+    expect(g.loops).toHaveLength(1);
+    for (const v of g.vertices) {
+      expect(Math.hypot(v.x, v.y)).toBeCloseTo(3, 12);
+    }
+  });
+});
+
+describe('repeat', () => {
+  const dotAt = (angle: number, r = 2): ShapeInput[] => [
+    circle('band', 0, 0, r),
+    { id: 'dot', type: 'circle', center: { on: 'band', angle }, r: 0.25 },
+  ];
+  const centres = (rep: ResolvedRepeat, original: ResolvedCircle): Vec[] => [
+    { x: original.circle.cx, y: original.circle.cy },
+    ...rep.copies.map((c) => {
+      const el = c.element as ResolvedCircle;
+      return { x: el.circle.cx, y: el.circle.cy };
+    }),
+  ];
+
+  it('rotates n copies about the centre', () => {
+    const m = model(
+      build(
+        [...dotAt(0), { id: 'rep', type: 'repeat', of: ['dot'], n: 6 }],
+        [{ stroke: ['rep'], width: 0.125 }],
+      ),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copyCount).toBe(6);
+    expect(rep.copies).toHaveLength(5);
+    expect(rep.copies.map((c) => c.copy)).toEqual([1, 2, 3, 4, 5]);
+    expect(rep.copies.every((c) => c.of === 'dot')).toBe(true);
+    const cs = centres(rep, get(m, 'dot', 'circle'));
+    cs.forEach((c, k) => {
+      expect(c.x).toBeCloseTo(2 * Math.cos((k * Math.PI) / 3), 9);
+      expect(c.y).toBeCloseTo(2 * Math.sin((k * Math.PI) / 3), 9);
+    });
+    expect(m.strokes[0]?.items).toHaveLength(6);
+  });
+
+  it('rotates about an explicit centre', () => {
+    const m = model(
+      build([
+        circle('dot', 1, 0, 0.5),
+        { id: 'rep', type: 'repeat', of: ['dot'], n: 4, center: [3, 0] },
+      ]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    const cs = centres(rep, get(m, 'dot', 'circle'));
+    expect(cs).toHaveLength(4);
+    expect(cs[1]?.x).toBeCloseTo(3, 9);
+    expect(cs[1]?.y).toBeCloseTo(-2, 9);
+  });
+
+  it('adds mirrored copies for 2n placements', () => {
+    const m = model(
+      build([...dotAt(20), { id: 'rep', type: 'repeat', of: ['dot'], n: 3, mirror: true }]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copyCount).toBe(6);
+    expect(rep.copies).toHaveLength(5);
+    const angles = centres(rep, get(m, 'dot', 'circle')).map(
+      (c) => ((Math.atan2(c.y, c.x) * 180) / Math.PI + 360) % 360,
+    );
+    const want = [20, 140, 260, 160, 280, 40];
+    for (const a of want) {
+      expect(angles.some((x) => Math.abs(x - a) < 1e-7)).toBe(true);
+    }
+  });
+
+  it('drops mirrored duplicates of an axis-symmetric motif', () => {
+    const m = model(
+      build([...dotAt(0), { id: 'rep', type: 'repeat', of: ['dot'], n: 12, mirror: true }]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copyCount).toBe(12);
+    expect(rep.copies).toHaveLength(11);
+  });
+
+  it('keeps a single mirrored copy for n = 1', () => {
+    const m = model(
+      build([...dotAt(30), { id: 'rep', type: 'repeat', of: ['dot'], n: 1, mirror: true }]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copyCount).toBe(2);
+    const el = rep.copies[0]?.element as ResolvedCircle;
+    expect(Math.atan2(el.circle.cy, el.circle.cx)).toBeCloseTo((150 * Math.PI) / 180, 9);
+  });
+
+  it('copies lines, polygons and tangent circles', () => {
+    const m = model(
+      build([
+        circle('c', 0, 0, 3),
+        { id: 'l', type: 'line', from: [0, 1], to: [0, 3] },
+        { id: 'g', type: 'polygon', in: 'c', n: 3, rotate: 90 },
+        { id: 'rep', type: 'repeat', of: ['l', 'g'], n: 3 },
+      ]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    const lines = rep.copies.filter((c) => c.of === 'l');
+    expect(lines).toHaveLength(2);
+    const second = lines[0]?.element;
+    expect(second?.type).toBe('line');
+    if (second?.type === 'line') {
+      expect(Math.hypot(second.to.x, second.to.y)).toBeCloseTo(3, 9);
+      expect(Math.abs(signedDistance(second.line, second.from))).toBeLessThan(1e-9);
+    }
+    // A triangle rotated by 120 degrees is the same triangle.
+    expect(rep.copies.filter((c) => c.of === 'g')).toHaveLength(0);
+    expect(rep.copyCount).toBe(3);
+
+    const t = model(
+      build([
+        circle('a', 0, 0, 2),
+        circle('b', 4, 0, 1),
+        { id: 'tc', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [2.5, 1] },
+        { id: 'rep', type: 'repeat', of: ['tc'], n: 2 },
+      ]),
+    );
+    const copy = get(t, 'rep', 'repeat').copies[0]?.element;
+    expect(copy?.type).toBe('circle');
+  });
+});
+
+describe('figure strokes', () => {
+  it('expands repeats and orders items', () => {
+    const m = model(
+      build(
+        [
+          circle('band', 0, 0, 3),
+          { id: 'dot', type: 'circle', center: { on: 'band', angle: 0 }, r: 0.25 },
+          { id: 'rep', type: 'repeat', of: ['dot'], n: 4 },
+          { id: 'l', type: 'line', from: [-3, 0], to: [3, 0] },
+          {
+            id: 's',
+            type: 'points',
+            through: [
+              [0, 0],
+              [1, 0],
+              [0, 1],
+            ],
+          },
+        ],
+        [
+          { stroke: ['band', 'l'], width: 0.25, color: '#112233' },
+          { stroke: ['rep', 's'], width: 0.125 },
+        ],
+      ),
+    );
+    expect(m.fills).toEqual([]);
+    const [first, second] = m.strokes;
+    expect(first?.color).toBe('#112233');
+    expect(first?.items.map((i) => i.kind)).toEqual(['circle', 'segment']);
+    expect(second?.index).toBe(1);
+    expect(second?.items.map((i) => `${i.id}:${i.copy}:${i.via}`)).toEqual([
+      'dot:0:rep',
+      'dot:1:rep',
+      'dot:2:rep',
+      'dot:3:rep',
+      's:0:s',
+    ]);
+    expect(second?.items[4]?.kind).toBe('polygon');
+  });
+});
+
+describe('mark fills', () => {
+  const markSpec = (shapes: ShapeInput[], fill: unknown): SpecInput =>
+    build(shapes, [{ fill, color: '#ff0000' }], { mode: 'mark' });
+
+  it('sets a source on every leaf and unions repeat copies', () => {
+    const m = model(
+      markSpec([circle('dot', 2, 0, 0.5), { id: 'rep', type: 'repeat', of: ['dot'], n: 4 }], 'rep'),
+    );
+    const fill = m.fills[0];
+    expect(fill?.color).toBe('#ff0000');
+    expect(fill?.index).toBe(0);
+    const region = fill?.region;
+    expect(region?.kind).toBe('union');
+    if (region?.kind === 'union') {
+      expect(region.children.map((c) => (c.kind === 'disc' ? c.source : null))).toEqual([
+        { id: 'dot', copy: 0 },
+        { id: 'dot', copy: 1 },
+        { id: 'dot', copy: 2 },
+        { id: 'dot', copy: 3 },
+      ]);
+    }
+    expect(fill && contains(fill.region, { x: 0, y: 2 })).toBe(true);
+    expect(fill && contains(fill.region, { x: 0, y: 0 })).toBe(false);
+  });
+
+  it('builds polygon leaves with compound loops', () => {
+    const m = model(
+      markSpec(
+        [circle('c', 0, 0, 3), { id: 'g', type: 'polygon', in: 'c', n: 6, step: 2, rotate: 90 }],
+        'g',
+      ),
+    );
+    const region = m.fills[0]?.region;
+    expect(region).toMatchObject({ kind: 'poly', source: { id: 'g', copy: 0 } });
+    expect(region?.kind === 'poly' && region.loops.length).toBe(2);
+  });
+
+  it('builds a half-plane on the side of toward', () => {
+    const m = model(
+      markSpec([circle('body', 0, 0, 3), { id: 'l', type: 'line', from: [-5, 0], to: [5, 0] }], {
+        intersect: ['body', { half: 'l', toward: [0, -1] }],
+      }),
+    );
+    const region = m.fills[0]?.region;
+    expect(region && contains(region, { x: 0, y: -1 })).toBe(true);
+    expect(region && contains(region, { x: 0, y: 1 })).toBe(false);
+    if (region?.kind === 'intersect') {
+      expect(region.children[1]).toMatchObject({ kind: 'half', source: { id: 'l', copy: 0 } });
+    }
+  });
+
+  it('rejects toward on the line, attributing it to the layer', () => {
+    const errors = failure(
+      markSpec([circle('body', 0, 0, 3), { id: 'l', type: 'line', from: [-5, 0], to: [5, 0] }], {
+        intersect: ['body', { half: 'l', toward: [1, 0] }],
+      }),
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.id).toBe('paint[0]');
+    expect(errors[0]?.message).toContain('toward');
+  });
+
+  it('reports an unresolved region leaf as a dependent layer', () => {
+    const errors = failure(
+      markSpec(
+        [
+          circle('a', 0, 0, 1),
+          circle('b', 9, 0, 1),
+          { id: 'p', type: 'point', at: { intersect: ['a', 'b'] } },
+          { id: 'c', type: 'circle', center: 'p', r: 1 },
+        ],
+        'c',
+      ),
+    );
+    expect(errors.map((e) => e.id)).toEqual(['p', 'c', 'paint[0]']);
+    expect(errors[2]?.dependsOn).toBe('c');
+  });
+});
+
+describe('example specs', () => {
+  it('resolves the figure example', () => {
+    const m = model({
+      version: 1,
+      mode: 'figure',
+      grid: { divisions: 4 },
+      shapes: [
+        { id: 'outer', type: 'circle', r: 'R' },
+        { id: 'band', type: 'circle', r: 3.5 },
+        { id: 'inner', type: 'circle', r: 3 },
+        { id: 'core', type: 'circle', r: 'R/2' },
+        { id: 'star', type: 'polygon', in: 'inner', n: 6, step: 2, rotate: 90 },
+        { id: 'dot', type: 'circle', center: { on: 'band', angle: 0 }, r: 0.25 },
+        { id: 'dots', type: 'repeat', of: ['dot'], n: 12 },
+      ],
+      paint: [{ stroke: ['outer', 'inner', 'core', 'star', 'dots'], width: 0.125 }],
+    } as SpecInput);
+    expect(get(m, 'dots', 'repeat').copyCount).toBe(12);
+    expect(get(m, 'star', 'polygon').loops).toHaveLength(2);
+    expect(m.strokes[0]?.items).toHaveLength(4 + 12);
+    expect(m.strokes[0]?.width).toBe(0.125);
+  });
+
+  it('resolves the mark example, with the crescent filled and the bite empty', () => {
+    const m = model({
+      version: 1,
+      mode: 'mark',
+      grid: { divisions: 4 },
+      concept: 'A crescent cut from one disc by a second, offset one module up and right.',
+      shapes: [
+        { id: 'body', type: 'circle', r: 'R' },
+        { id: 'bite', type: 'circle', center: [1, 1], r: 3 },
+      ],
+      paint: [{ fill: { subtract: ['body', 'bite'] } }],
+    } as SpecInput);
+    const fill = m.fills[0];
+    expect(fill?.color).toBe('#000000');
+    expect(fill && contains(fill.region, { x: -3, y: -2 })).toBe(true);
+    expect(fill && contains(fill.region, { x: 1, y: 1 })).toBe(false);
+    expect(m.strokes).toEqual([]);
+  });
+});
