@@ -634,3 +634,136 @@ describe('documented examples', () => {
     expect(run(input)).toEqual({ violations: [], exceptionsApplied: [], hints: [] });
   });
 });
+
+const arc = (id: string, on: string, from: unknown, to: unknown): Json => ({
+  id,
+  type: 'arc',
+  on,
+  from,
+  to,
+});
+
+describe('arc rules', () => {
+  it('applies the angle rule to numeric ends and ignores point ends', () => {
+    const ok = figure([circle('a', 3), arc('s', 'a', 22.5, -45)], [stroke(['s'])]);
+    expect(has(ok, 'angle')).toBe(false);
+    const bad = figure([circle('a', 3), arc('s', 'a', 10, 90)], [stroke(['s'])]);
+    const [violation] = run(bad).violations;
+    expect(violation).toMatchObject({ rule: 'angle', target: 's' });
+    expect(violation?.message).toContain('from 10');
+    const both = figure([circle('a', 3), arc('s', 'a', 10, 95)], [stroke(['s'])]);
+    expect(run(both).violations[0]?.message).toContain('to 95');
+    const points = figure(
+      [
+        circle('a', 3),
+        circle('b', 3, [1, 0]),
+        arc(
+          's',
+          'a',
+          { intersect: ['a', 'b'], near: [0, 3] },
+          { intersect: ['a', 'b'], near: [0, -3] },
+        ),
+      ],
+      [stroke(['s'])],
+    );
+    expect(has(points, 'angle')).toBe(false);
+  });
+
+  it('checks the angle inside a point end written as on', () => {
+    const input = figure(
+      [circle('a', 3), arc('s', 'a', { on: 'a', angle: 10 }, 90)],
+      [stroke(['s'])],
+    );
+    expect(has(input, 'angle', 's')).toBe(true);
+  });
+
+  it('checks literal coordinates of a point end for off_grid', () => {
+    const input = figure([circle('a', 1), arc('s', 'a', [0.6, 0.8], [1, 0])], [stroke(['s'])]);
+    expect(has(input, 'off_grid', 's')).toBe(true);
+  });
+
+  it('is not counted by circle_count', () => {
+    const circles = Array.from({ length: 16 }, (_, i) => circle(`c${i}`, 1 + (i % 4) * 0.25));
+    const arcs = [arc('s', 'c0', 0, 90), arc('t', 'c1', 90, 180)];
+    const input = figure([...circles, ...arcs], [stroke(['c0', 's', 't'])]);
+    expect(has(input, 'circle_count')).toBe(false);
+    expect(
+      has(figure([...circles, circle('c16', 1), ...arcs], [stroke(['s'])]), 'circle_count'),
+    ).toBe(true);
+  });
+
+  it('measures off_canvas by the true bounding box, not the whole circle', () => {
+    // A circle of radius 5.5 leaves the canvas (half side 5), but the 30..60 degree arc does not.
+    const inside = figure([circle('a', 5.5), arc('s', 'a', 30, 60)], [stroke(['s'], 0.0625)]);
+    expect(has(inside, 'off_canvas')).toBe(false);
+    // The sweep to 100 degrees passes the top of the circle at y = 5.5.
+    const over = figure([circle('a', 5.5), arc('s', 'a', 30, 100)], [stroke(['s'], 0.0625)]);
+    expect(has(over, 'off_canvas', 's')).toBe(true);
+    // The reach counts the axis extreme at the arc start itself, plus half the width.
+    const edge = figure([circle('a', 4.9375), arc('s', 'a', 90, 180)], [stroke(['s'], 0.125)]);
+    expect(has(edge, 'off_canvas')).toBe(false);
+    const past = figure([circle('a', 4.9375), arc('s', 'a', 90, 180)], [stroke(['s'], 0.25)]);
+    expect(has(past, 'off_canvas', 's')).toBe(true);
+    // A sweep through 0 degrees reaches the right-hand extreme.
+    const wrap = figure([circle('a', 5.5), arc('s', 'a', 300, 60)], [stroke(['s'], 0.0625)]);
+    expect(has(wrap, 'off_canvas', 's')).toBe(true);
+    const wrapIn = figure([circle('a', 5.5), arc('s', 'a', 300, 330)], [stroke(['s'], 0.0625)]);
+    expect(has(wrapIn, 'off_canvas')).toBe(false);
+  });
+
+  it('reports an arc as unused unless a stroke, repeat or erase chain reaches it', () => {
+    const idle = figure([circle('a', 3), arc('s', 'a', 0, 90)], [stroke(['a'])]);
+    expect(has(idle, 'unused_shape', 's')).toBe(true);
+    const painted = figure([circle('a', 3), arc('s', 'a', 0, 90)], [stroke(['s'])]);
+    expect(has(painted, 'unused_shape')).toBe(false);
+    const repeated = figure(
+      [circle('a', 3), arc('s', 'a', 0, 90), { id: 'r', type: 'repeat', of: ['s'], n: 4 }],
+      [stroke(['r'])],
+    );
+    expect(has(repeated, 'unused_shape')).toBe(false);
+    const inMark = mark([circle('a', 3), arc('s', 'a', 0, 90)], 'a');
+    expect(has(inMark, 'unused_shape', 's')).toBe(true);
+  });
+
+  it('keeps the circle an arc sits on and its point ends reachable', () => {
+    const input = figure(
+      [
+        circle('a', 3),
+        circle('b', 3, [1, 0]),
+        arc(
+          's',
+          'a',
+          { intersect: ['a', 'b'], near: [0, 3] },
+          { intersect: ['a', 'b'], near: [0, -3] },
+        ),
+      ],
+      [stroke(['s'])],
+    );
+    expect(has(input, 'unused_shape')).toBe(false);
+  });
+});
+
+describe('erase layers', () => {
+  const scene = (paint: Json[]): SpecInput =>
+    figure([circle('a', 4), circle('disc', 1, [0, 2]), circle('b', 'a.r/2')], paint);
+
+  it('treats an erase target as reachable', () => {
+    const erased = scene([stroke(['a']), { erase: ['disc'] }]);
+    expect(has(erased, 'unused_shape', 'disc')).toBe(false);
+    const unused = scene([stroke(['a'])]);
+    expect(has(unused, 'unused_shape', 'disc')).toBe(true);
+  });
+
+  it('follows references from an erase target', () => {
+    const input = figure(
+      [circle('a', 4), circle('big', 3), circle('disc', 1, { on: 'big', angle: 90 })],
+      [stroke(['a']), { erase: ['disc'] }],
+    );
+    expect(has(input, 'unused_shape')).toBe(false);
+  });
+
+  it('adds nothing to thin_stroke, off_canvas or the ratio count', () => {
+    const input = scene([stroke(['a'], 0.125), { erase: ['disc', 'b'] }]);
+    expect(rulesOf(input)).toEqual([]);
+  });
+});

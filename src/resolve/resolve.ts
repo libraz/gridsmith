@@ -6,6 +6,7 @@ import {
 import type { Circle, Line, Vec } from '../geom/primitives.js';
 import {
   centerOf,
+  cross,
   distance,
   EPS,
   lineThrough,
@@ -14,6 +15,7 @@ import {
   rotateAbout,
   SNAP,
   signedDistance,
+  sub,
 } from '../geom/primitives.js';
 import type { RegionNode } from '../geom/region.js';
 import type { TangentCandidate, TangentTarget } from '../geom/tangent.js';
@@ -51,8 +53,24 @@ export type ResolvedLine = { type: 'line'; id: string; line: Line; from: Vec; to
 export type ResolvedPolygon = { type: 'polygon'; id: string; loops: Vec[][]; vertices: Vec[] };
 export type ResolvedPoints = { type: 'points'; id: string; loops: [Vec[]]; vertices: Vec[] };
 
+/** An arc of a circle, counter-clockwise from `start` to `end`; angles are degrees in [0, 360) and `sweep` is in (0, 360). */
+export type ArcGeometry = {
+  circle: Circle;
+  from: number;
+  to: number;
+  sweep: number;
+  start: Vec;
+  end: Vec;
+};
+export type ResolvedArc = { type: 'arc'; id: string } & ArcGeometry;
+
 /** A repeated element: a tangent circle is copied as a plain circle. */
-export type RepeatElement = ResolvedCircle | ResolvedLine | ResolvedPolygon | ResolvedPoints;
+export type RepeatElement =
+  | ResolvedCircle
+  | ResolvedLine
+  | ResolvedArc
+  | ResolvedPolygon
+  | ResolvedPoints;
 
 /** Copy 0 is the original, which is not listed; generated copies are numbered from 1 per `of` element across all repeats. */
 export type RepeatCopy = { of: string; copy: number; element: RepeatElement };
@@ -71,6 +89,7 @@ export type ResolvedElement =
   | ResolvedCircle
   | ResolvedTangentCircle
   | ResolvedLine
+  | ResolvedArc
   | ResolvedPolygon
   | ResolvedPoints
   | ResolvedRepeat;
@@ -80,7 +99,13 @@ export type ResolvedFill = { index: number; color: string; region: RegionNode };
 export type StrokeGeometry =
   | { kind: 'circle'; circle: Circle }
   | { kind: 'segment'; from: Vec; to: Vec }
+  | ({ kind: 'arc' } & ArcGeometry)
   | { kind: 'polygon'; loops: Vec[][] };
+
+/** A closed shape an erase layer hides the earlier layers inside of. */
+export type EraseShape = { kind: 'circle'; circle: Circle } | { kind: 'polygon'; loops: Vec[][] };
+
+export type ResolvedErase = { index: number; shapes: EraseShape[] };
 
 /** `id` is the drawn element, `via` the id listed in the layer (a repeat when expanded). */
 export type StrokeItem = { id: string; copy: number; via: string } & StrokeGeometry;
@@ -107,6 +132,8 @@ export type ResolvedModel = {
   fills: ResolvedFill[];
   /** Stroke layers of a `figure`, empty for a `mark`. */
   strokes: ResolvedStroke[];
+  /** Erase layers of a `figure`; `index` orders them against `strokes`. */
+  erases: ResolvedErase[];
 };
 
 export type ResolveResult =
@@ -116,11 +143,14 @@ export type ResolveResult =
 // Candidates closer than MERGE are one; a best and second best within TIE are undecidable.
 const MERGE = 1e-7;
 const TIE = 1e-6;
+/** How far an arc end given as a point may lie from the circle. */
+const ARC_ON_CIRCLE = 1e-6;
 
 type Drawable =
   | ResolvedCircle
   | ResolvedTangentCircle
   | ResolvedLine
+  | ResolvedArc
   | ResolvedPolygon
   | ResolvedPoints;
 type Placement = { el: Drawable; copy: number };
@@ -175,6 +205,21 @@ const offsetRadii = (c: Circle, r: number): number[] => {
 const sameCircle = (a: Circle, b: Circle): boolean =>
   distance(centerOf(a), centerOf(b)) <= SNAP && Math.abs(a.r - b.r) <= SNAP;
 
+const normalizeDegrees = (deg: number): number => {
+  const a = ((deg % 360) + 360) % 360;
+  return 360 - a < 1e-9 ? 0 : a;
+};
+
+const degreesOf = (centre: Vec, p: Vec): number =>
+  normalizeDegrees((Math.atan2(p.y - centre.y, p.x - centre.x) * 180) / Math.PI);
+
+const arcBetween = (circle: Circle, start: Vec, end: Vec): ArcGeometry => {
+  const from = degreesOf(centerOf(circle), start);
+  const to = degreesOf(centerOf(circle), end);
+  const sweep = normalizeDegrees(to - from);
+  return { circle, from, to, sweep: sweep === 0 ? 360 : sweep, start, end };
+};
+
 const sameVertices = (a: Vec[], b: Vec[]): boolean =>
   a.length === b.length &&
   a.every((p) => b.some((q) => distance(p, q) <= SNAP)) &&
@@ -186,6 +231,13 @@ const sameGeometry = (a: RepeatElement, b: RepeatElement): boolean => {
   }
   if (a.type === 'line' && b.type === 'line') {
     return sameVertices([a.from, a.to], [b.from, b.to]);
+  }
+  if (a.type === 'arc' && b.type === 'arc') {
+    return (
+      sameCircle(a.circle, b.circle) &&
+      distance(a.start, b.start) <= SNAP &&
+      distance(a.end, b.end) <= SNAP
+    );
   }
   if ((a.type === 'polygon' || a.type === 'points') && a.type === b.type) {
     return sameVertices(a.vertices, b.vertices);
@@ -203,6 +255,17 @@ const mapElement = (el: RepeatElement, f: (p: Vec) => Vec): RepeatElement => {
       const from = f(el.from);
       const to = f(el.to);
       return { ...el, from, to, line: lineThrough(from, to) };
+    }
+    case 'arc': {
+      const c = f(centerOf(el.circle));
+      const origin = f({ x: 0, y: 0 });
+      const flipped = cross(sub(f({ x: 1, y: 0 }), origin), sub(f({ x: 0, y: 1 }), origin)) < 0;
+      const [start, end] = flipped ? [f(el.end), f(el.start)] : [f(el.start), f(el.end)];
+      return {
+        type: 'arc',
+        id: el.id,
+        ...arcBetween({ cx: c.x, cy: c.y, r: el.circle.r }, start, end),
+      };
     }
     case 'polygon':
       return { ...el, loops: el.loops.map((l) => l.map(f)), vertices: el.vertices.map(f) };
@@ -445,6 +508,31 @@ export function resolveSpec(spec: Spec): ResolveResult {
     );
   };
 
+  const resolveArc = (shape: Extract<Shape, { type: 'arc' }>): ResolvedArc => {
+    const circle = circleOf(shape.on);
+    const endOf = (value: Point | number, label: string): Vec => {
+      if (typeof value === 'number') {
+        return pointOnCircle(circle, value);
+      }
+      const p = located(value, label);
+      const off = Math.abs(distance(p, centerOf(circle)) - circle.r);
+      if (off > ARC_ON_CIRCLE) {
+        throw new Failure(
+          `arc ${label} is off the circle (received: ${fmtPoint(p)} at distance ${fmt(off)} from the circumference of "${shape.on}"; allowed: within ${ARC_ON_CIRCLE}). Use degrees, { "on": "${shape.on}", "angle": <degrees> } or an intersect that includes "${shape.on}".`,
+        );
+      }
+      return pointOnCircle(circle, degreesOf(centerOf(circle), p));
+    };
+    const start = endOf(shape.from, 'from');
+    const end = endOf(shape.to, 'to');
+    if (distance(start, end) <= SNAP) {
+      throw new Failure(
+        `arc ends coincide (received: from ${fmtPoint(start)} and to ${fmtPoint(end)}, distance ${fmt(distance(start, end))}; allowed: distance above ${SNAP}). Use a circle for a full circumference.`,
+      );
+    }
+    return { type: 'arc', id: shape.id, ...arcBetween(circle, start, end) };
+  };
+
   const resolvePolygon = (shape: Extract<Shape, { type: 'polygon' }>): ResolvedPolygon => {
     const circle = circleOf(shape.in);
     const vertices = Array.from({ length: shape.n }, (_, k) =>
@@ -504,12 +592,13 @@ export function resolveSpec(spec: Spec): ResolveResult {
           return { type: 'circle', id: el.id, circle: el.circle, label: el.label };
         case 'circle':
         case 'line':
+        case 'arc':
         case 'polygon':
         case 'points':
           return el;
         default:
           throw new Failure(
-            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, polygon or points)`,
+            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, arc, polygon or points)`,
           );
       }
     });
@@ -612,6 +701,8 @@ export function resolveSpec(spec: Spec): ResolveResult {
         }
         return { type: 'line', id: shape.id, line: lineThrough(from, to), from, to };
       }
+      case 'arc':
+        return resolveArc(shape);
       case 'polygon':
         return resolvePolygon(shape);
       case 'points':
@@ -666,6 +757,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'points':
         return { kind: 'poly', loops: el.loops, source };
       case 'line':
+      case 'arc':
         return null;
     }
   };
@@ -677,9 +769,38 @@ export function resolveSpec(spec: Spec): ResolveResult {
         return { id: el.id, copy, via, kind: 'circle', circle: el.circle };
       case 'line':
         return { id: el.id, copy, via, kind: 'segment', from: el.from, to: el.to };
+      case 'arc':
+        return {
+          id: el.id,
+          copy,
+          via,
+          kind: 'arc',
+          circle: el.circle,
+          from: el.from,
+          to: el.to,
+          sweep: el.sweep,
+          start: el.start,
+          end: el.end,
+        };
       case 'polygon':
       case 'points':
         return { id: el.id, copy, via, kind: 'polygon', loops: el.loops };
+    }
+  };
+
+  const eraseShapeOf = ({ el }: Placement): EraseShape => {
+    switch (el.type) {
+      case 'circle':
+      case 'tangent_circle':
+        return { kind: 'circle', circle: el.circle };
+      case 'polygon':
+      case 'points':
+        return { kind: 'polygon', loops: el.loops };
+      case 'line':
+      case 'arc':
+        throw new Failure(
+          `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points or repeat of those)`,
+        );
     }
   };
 
@@ -726,10 +847,16 @@ export function resolveSpec(spec: Spec): ResolveResult {
 
   const fills: ResolvedFill[] = [];
   const strokes: ResolvedStroke[] = [];
+  const erases: ResolvedErase[] = [];
 
   const resolveLayer = (layer: PaintLayer, index: number): void => {
     if ('fill' in layer) {
       fills.push({ index, color: layer.color, region: buildRegion(layer.fill) });
+      return;
+    }
+    if ('erase' in layer) {
+      const shapes = layer.erase.flatMap((id) => expand(lookup(id)).map(eraseShapeOf));
+      erases.push({ index, shapes });
       return;
     }
     const width = evalLength(layer.width, WIDTH_MIN, WIDTH_MAX, 'width');
@@ -762,6 +889,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
       byId,
       fills,
       strokes,
+      erases,
     },
   };
 }

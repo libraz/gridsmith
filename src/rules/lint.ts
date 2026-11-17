@@ -1,7 +1,7 @@
 import type { FillResult } from '../geom/arrangement.js';
-import type { Circle, Line } from '../geom/primitives.js';
-import { centerOf, distance, EPS, signedDistance } from '../geom/primitives.js';
-import type { ResolvedModel } from '../resolve/resolve.js';
+import type { Circle, Line, Vec } from '../geom/primitives.js';
+import { centerOf, distance, EPS, pointOnCircle, signedDistance } from '../geom/primitives.js';
+import type { ArcGeometry, ResolvedModel } from '../resolve/resolve.js';
 import { lengthSignature } from '../spec/length.js';
 import type { Point, RuleId, Shape, Spec } from '../spec/schema.js';
 import {
@@ -29,7 +29,7 @@ export const RULES = {
   circle_count: {
     description:
       'At most 8 circles (circle and tangent_circle) in a mark and 16 in a figure, counted as declared, ' +
-      'before repeat expansion. Target: "spec".',
+      'before repeat expansion; arcs are not circles. Target: "spec".',
     modes: ['mark', 'figure'],
     maxCircles: { mark: 8, figure: 16 },
   },
@@ -44,7 +44,7 @@ export const RULES = {
   },
   angle: {
     description:
-      'Angles written in degrees (on.angle, polygon.rotate, repeat.axis) must be a multiple of 180/n for some n in ' +
+      'Angles written in degrees (on.angle, polygon.rotate, repeat.axis, arc from/to) must be a multiple of 180/n for some n in ' +
       '{2, 3, 4, 5, 6, 8, 10, 12, 20, 24}; polygon.n and repeat.n (when 2 or more) must be in that set. ' +
       'Target: the element id.',
     modes: ['mark', 'figure'],
@@ -54,7 +54,7 @@ export const RULES = {
   off_canvas: {
     description:
       'Everything drawn must stay inside the square canvas of half side R + margin. A figure stroke counts ' +
-      'half its width beyond the geometry; a mark counts the bounding box of the filled region. ' +
+      'half its width beyond the geometry (an arc by its own bounding box); a mark counts the bounding box of the filled region. ' +
       'Target: the element id (figure) or "paint[i]" (mark).',
     modes: ['mark', 'figure'],
     tolerance: 1e-9,
@@ -73,7 +73,7 @@ export const RULES = {
   },
   unused_shape: {
     description:
-      'Every element must be reachable from a paint layer through references. Helper circles that a drawn ' +
+      'Every element must be reachable from a paint layer (stroke or erase) through references. Helper circles that a drawn ' +
       'element refers to are fine; a chain that nothing paints is reported element by element. Target: the element id.',
     modes: ['mark', 'figure'],
   },
@@ -132,6 +132,11 @@ function pointSlots(shape: Shape): { label: string; point: Point }[] {
       return [
         { label: 'from', point: shape.from },
         { label: 'to', point: shape.to },
+      ];
+    case 'arc':
+      return [
+        ...(typeof shape.from === 'number' ? [] : [{ label: 'from', point: shape.from }]),
+        ...(typeof shape.to === 'number' ? [] : [{ label: 'to', point: shape.to }]),
       ];
     case 'points':
       return shape.through.map((point, k) => ({ label: `through[${k}]`, point }));
@@ -242,7 +247,14 @@ function checkAngle(spec: Spec): Finding[] {
         testAngle(`${label} angle`, theta);
       }
     }
-    if (shape.type === 'polygon') {
+    if (shape.type === 'arc') {
+      for (const label of ['from', 'to'] as const) {
+        const end = shape[label];
+        if (typeof end === 'number') {
+          testAngle(label, end);
+        }
+      }
+    } else if (shape.type === 'polygon') {
       testCount('n', shape.n);
       testAngle('rotate', shape.rotate);
     } else if (shape.type === 'repeat') {
@@ -258,11 +270,25 @@ function checkAngle(spec: Spec): Finding[] {
   return findings;
 }
 
+// Bounding-box extent of an arc: its ends plus each axis extreme inside the sweep.
+function arcReach(arc: ArcGeometry): number {
+  const { circle, from, sweep } = arc;
+  const points: Vec[] = [arc.start, arc.end];
+  for (const axis of [0, 90, 180, 270]) {
+    if ((axis - from + 360) % 360 <= sweep) {
+      points.push(pointOnCircle(circle, axis));
+    }
+  }
+  return Math.max(...points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y))));
+}
+
 // Largest distance from the origin along either axis, the canvas being a square about it.
 function strokeReach(item: ResolvedModel['strokes'][number]['items'][number]): number {
   switch (item.kind) {
     case 'circle':
       return Math.max(Math.abs(item.circle.cx), Math.abs(item.circle.cy)) + item.circle.r;
+    case 'arc':
+      return arcReach(item);
     case 'segment':
       return Math.max(
         Math.abs(item.from.x),

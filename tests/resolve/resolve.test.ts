@@ -941,3 +941,173 @@ describe('example specs', () => {
     expect(m.strokes).toEqual([]);
   });
 });
+
+describe('arc resolution', () => {
+  const base = [circle('a', 0, 0, 3), circle('b', 2, 0, 3)];
+  const arcOf = (from: unknown, to: unknown, on = 'a', id = 'arc'): ShapeInput => ({
+    id,
+    type: 'arc',
+    on,
+    from,
+    to,
+  });
+  const strokeArc = (shapes: ShapeInput[], id = 'arc') =>
+    build([...base, ...shapes], [{ stroke: [id], width: 0.125 }]);
+
+  it('runs counter-clockwise from the first to the second numeric end', () => {
+    const m = model(strokeArc([arcOf(30, 150)]));
+    const arc = get(m, 'arc', 'arc');
+    expect([arc.from, arc.to, arc.sweep]).toEqual([30, 150, 120]);
+    expect(arc.start.x).toBeCloseTo(3 * Math.cos(Math.PI / 6), 12);
+    expect(arc.end.y).toBeCloseTo(3 * Math.sin((150 * Math.PI) / 180), 12);
+    expect(m.strokes[0]?.items).toHaveLength(1);
+    expect(m.strokes[0]?.items[0]).toMatchObject({ kind: 'arc', sweep: 120 });
+  });
+
+  it('wraps through 360 and normalises angles beyond a turn', () => {
+    const arc = get(model(strokeArc([arcOf(-90, 450)])), 'arc', 'arc');
+    expect([arc.from, arc.to, arc.sweep]).toEqual([270, 90, 180]);
+    const reverse = get(model(strokeArc([arcOf(150, 30)])), 'arc', 'arc');
+    expect(reverse.sweep).toBe(240);
+  });
+
+  it('takes point ends from intersections and measures the angles from the circle centre', () => {
+    const m = model(
+      strokeArc([
+        arcOf(
+          { intersect: ['a', 'b'], near: [1, -3] },
+          { intersect: ['a', 'b'], near: [1, 3] },
+          'b',
+        ),
+      ]),
+    );
+    const arc = get(m, 'arc', 'arc');
+    const y = Math.sqrt(9 - 1);
+    expect(arc.start.x).toBeCloseTo(1, 9);
+    expect(arc.start.y).toBeCloseTo(-y, 9);
+    expect(arc.end.y).toBeCloseTo(y, 9);
+    const expected = (Math.atan2(y, -1) * 180) / Math.PI;
+    expect(arc.to).toBeCloseTo(expected, 9);
+    expect(arc.circle).toEqual({ cx: 2, cy: 0, r: 3 });
+    expect(arc.sweep).toBeCloseTo(2 * expected, 9);
+  });
+
+  it('rejects an end that is off the circle, stating the distance', () => {
+    const [error] = failure(strokeArc([arcOf([3, 0.5], 90)]));
+    expect(error?.id).toBe('arc');
+    expect(error?.message).toContain('off the circle');
+    expect(error?.message).toContain('distance 0.0');
+    expect(error?.message).toContain('0.000001');
+  });
+
+  it('accepts an end within 1e-6 of the circle', () => {
+    expect(run(strokeArc([arcOf([3 + 5e-7, 0], 90)])).ok).toBe(true);
+    expect(run(strokeArc([arcOf([3 + 2e-6, 0], 90)])).ok).toBe(false);
+  });
+
+  it('rejects coincident ends and suggests a circle', () => {
+    for (const [from, to] of [
+      [40, 40],
+      [0, 360],
+      [10, 730],
+      [[3, 0], 0],
+    ] as const) {
+      const [error] = failure(strokeArc([arcOf(from, to)]));
+      expect(error?.message).toContain('coincide');
+      expect(error?.message).toContain('circle');
+    }
+  });
+
+  it('reports a failed circle as the cause when an arc sits on it', () => {
+    const errors = failure(
+      build(
+        [{ id: 'bad', type: 'circle', center: [0, 0], r: 'R*16*2' }, arcOf(0, 90, 'bad')],
+        [{ stroke: ['arc'], width: 0.125 }],
+      ),
+    );
+    expect(errors.find((e) => e.id === 'arc')?.dependsOn).toBe('bad');
+  });
+
+  it('copies arcs by rotation about the centre', () => {
+    const m = model(
+      strokeArc([arcOf(0, 90), { id: 'ring', type: 'repeat', of: ['arc'], n: 4 }], 'ring'),
+    );
+    const ring = get(m, 'ring', 'repeat');
+    expect(ring.copyCount).toBe(4);
+    const angles = ring.copies.map((c) => (c.element.type === 'arc' ? c.element.from : Number.NaN));
+    expect(angles).toEqual([90, 180, 270]);
+    expect(m.strokes[0]?.items).toHaveLength(4);
+  });
+
+  it('swaps the ends of a mirrored arc so that it stays counter-clockwise', () => {
+    const m = model(
+      strokeArc(
+        [arcOf(0, 60), { id: 'pair', type: 'repeat', of: ['arc'], n: 1, mirror: true, axis: 90 }],
+        'pair',
+      ),
+    );
+    const [copy] = get(m, 'pair', 'repeat').copies;
+    expect(copy?.element.type).toBe('arc');
+    if (copy?.element.type === 'arc') {
+      // Mirrored across the y axis, 0..60 becomes 120..180 with the start at 120.
+      expect(copy.element.from).toBeCloseTo(120, 9);
+      expect(copy.element.to).toBeCloseTo(180, 9);
+      expect(copy.element.sweep).toBeCloseTo(60, 9);
+      expect(copy.element.start.x).toBeCloseTo(-1.5, 9);
+      expect(copy.element.end.x).toBeCloseTo(-3, 9);
+    }
+  });
+
+  it('drops a mirror copy that coincides with the original', () => {
+    const m = model(
+      strokeArc(
+        [arcOf(60, 120), { id: 'pair', type: 'repeat', of: ['arc'], n: 1, mirror: true, axis: 90 }],
+        'pair',
+      ),
+    );
+    expect(get(m, 'pair', 'repeat').copyCount).toBe(1);
+  });
+});
+
+describe('erase resolution', () => {
+  const shapes = [
+    circle('ring', 0, 0, 3),
+    circle('disc', 0, 2, 1),
+    { id: 'tri', type: 'polygon', in: 'ring', n: 3 },
+    { id: 'discs', type: 'repeat', of: ['disc'], n: 4 },
+  ];
+
+  it('lists the closed shapes of each erase layer with repeats expanded', () => {
+    const m = model(
+      build(shapes, [
+        { stroke: ['ring'], width: 0.125 },
+        { erase: ['discs', 'tri'] },
+        { stroke: ['discs'], width: 0.125 },
+        { erase: ['disc'] },
+      ]),
+    );
+    expect(m.strokes.map((s) => s.index)).toEqual([0, 2]);
+    expect(m.erases.map((e) => e.index)).toEqual([1, 3]);
+    expect(m.erases[0]?.shapes.map((s) => s.kind)).toEqual([
+      'circle',
+      'circle',
+      'circle',
+      'circle',
+      'polygon',
+    ]);
+    expect(m.erases[1]?.shapes).toHaveLength(1);
+    expect(m.erases[0]?.shapes[0]).toEqual({ kind: 'circle', circle: { cx: 0, cy: 2, r: 1 } });
+  });
+
+  it('has no erase layers in a mark', () => {
+    expect(
+      model({
+        version: 1,
+        mode: 'mark',
+        grid: { divisions: 4 },
+        shapes: [circle('a', 0, 0, 3)],
+        paint: [{ fill: 'a' }],
+      } as SpecInput).erases,
+    ).toEqual([]);
+  });
+});

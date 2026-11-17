@@ -857,3 +857,189 @@ describe('helpers', () => {
     ).toEqual(['a', 'l', 'c']);
   });
 });
+
+const arcFigure = (shapes: Obj[], paint: Obj[] = [{ stroke: ['arc'], width: 0.125 }]): Obj =>
+  figureSpec({ shapes, paint });
+
+const arcOf = (extra: Obj = {}): Obj => ({
+  id: 'arc',
+  type: 'arc',
+  on: 'a',
+  from: 30,
+  to: 150,
+  ...extra,
+});
+
+describe('arc shapes', () => {
+  it('accepts numeric and point ends and strokes them', () => {
+    expect(accepted(arcFigure([circle('a'), arcOf()]))).toBe(true);
+    expect(
+      accepted(
+        arcFigure([
+          circle('a'),
+          circle('b', { center: [1, 0] }),
+          arcOf({
+            from: { intersect: ['a', 'b'], near: [0, 3] },
+            to: { on: 'a', angle: 180 },
+          }),
+        ]),
+      ),
+    ).toBe(true);
+    expect(accepted(arcFigure([circle('a'), arcOf({ from: [4, 0], to: 'a' })]))).toBe(true);
+  });
+
+  it('keeps the angle range at 3600 degrees', () => {
+    expect(accepted(arcFigure([circle('a'), arcOf({ from: -3600, to: 3600 })]))).toBe(true);
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ from: 3601 })]), 'shapes.1.from');
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ to: -3601 })]), 'shapes.1.to');
+  });
+
+  it('rejects missing, mistyped and unknown keys', () => {
+    const { to: _to, ...noTo } = arcOf();
+    expectRejectedAt(arcFigure([circle('a'), noTo]), 'shapes.1.to');
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ from: null })]), 'shapes.1.from');
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ from: true })]), 'shapes.1.from');
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ sweep: 90 })]), 'shapes.1');
+  });
+
+  it('requires an earlier circle or tangent_circle in on', () => {
+    expectRejectedAt(arcFigure([arcOf({ on: 'ghost' })]), 'shapes.0.on');
+    expectRejectedAt(arcFigure([arcOf(), circle('a')]), 'shapes.0.on');
+    expectRejectedAt(
+      arcFigure([{ id: 'l', type: 'line', from: [0, 0], to: [1, 0] }, arcOf({ on: 'l' })]),
+      'shapes.1.on',
+    );
+    expectRejectedAt(
+      arcFigure([circle('a'), arcOf({ id: 'arc2' }), arcOf({ on: 'arc' })]),
+      'shapes.2.on',
+    );
+  });
+
+  it('checks the references inside point ends', () => {
+    expectRejectedAt(arcFigure([circle('a'), arcOf({ from: 'ghost' })]), 'shapes.1.from');
+    expectRejectedAt(
+      arcFigure([circle('a'), arcOf({ to: { intersect: ['a', 'a'], near: [0, 3] } })]),
+      'shapes.1.to.intersect.1',
+    );
+  });
+
+  it('can be repeated and stroked but not used as a region, base or reference', () => {
+    const repeated = [
+      circle('a'),
+      arcOf({ id: 'piece' }),
+      { id: 'ring', type: 'repeat', of: ['piece'], n: 4 },
+    ];
+    expect(accepted(arcFigure(repeated, [{ stroke: ['ring'], width: 0.125 }]))).toBe(true);
+    expectRejectedAt(
+      markSpec({ shapes: [circle('a'), arcOf()], paint: [{ fill: 'arc' }] }),
+      'paint.0.fill',
+    );
+    expectRejectedAt(markSpec({ shapes: repeated, paint: [{ fill: 'ring' }] }), 'paint.0.fill');
+    expectRejectedAt(
+      arcFigure([circle('a'), arcOf(), { id: 'p', type: 'polygon', in: 'arc', n: 3 }]),
+      'shapes.2.in',
+    );
+    expectRejectedAt(
+      arcFigure([circle('a'), arcOf(), circle('b', { r: 'arc.r/2' })]),
+      'shapes.2.r',
+    );
+    expectRejectedAt(
+      arcFigure([circle('a'), arcOf(), { id: 'p', type: 'point', at: 'arc' }]),
+      'shapes.2.at',
+    );
+    expectRejectedAt(
+      arcFigure([
+        circle('a'),
+        arcOf(),
+        { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'arc'], near: [0, 0] },
+      ]),
+      'shapes.2.to.1',
+    );
+    expectRejectedAt(
+      arcFigure([
+        circle('a'),
+        arcOf(),
+        { id: 'p', type: 'point', at: { intersect: ['a', 'arc'], near: [0, 3] } },
+      ]),
+      'shapes.2.at.intersect.1',
+    );
+  });
+
+  it('lists the ids an arc references', () => {
+    expect(shapeReferences(arcOf() as Shape)).toEqual(['a']);
+    expect(
+      shapeReferences(arcOf({ from: { intersect: ['a', 'b'], near: [0, 3] }, to: 'c' }) as Shape),
+    ).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('erase layers', () => {
+  const scene = [
+    circle('a'),
+    circle('b', { r: 2 }),
+    { id: 'l', type: 'line', from: [0, 0], to: [1, 0] },
+    { id: 'tri', type: 'polygon', in: 'b', n: 3 },
+    { id: 'fan', type: 'repeat', of: ['b'], n: 3, center: [1, 0] },
+    { id: 'rays', type: 'repeat', of: ['l'], n: 3 },
+    { id: 'p', type: 'point', at: [1, 1] },
+  ];
+  const withErase = (erase: unknown, paint: Obj[] = []): Obj =>
+    figureSpec({
+      shapes: scene,
+      paint: [{ stroke: ['a'], width: 0.125 }, ...paint, { erase }],
+    });
+
+  it('accepts circles, polygons and repeats of those after a stroke layer', () => {
+    expect(accepted(withErase(['b', 'tri', 'fan']))).toBe(true);
+    expect(specSchema.parse(withErase(['b'])).paint[1]).toEqual({ erase: ['b'] });
+  });
+
+  it('rejects an erase layer as the first layer', () => {
+    const spec = figureSpec({
+      shapes: scene,
+      paint: [{ erase: ['b'] }, { stroke: ['a'], width: 0.1 }],
+    });
+    expectRejectedAt(spec, 'paint.0');
+  });
+
+  it('rejects an erase layer in a mark', () => {
+    expectRejectedAt(
+      markSpec({ shapes: scene, paint: [{ fill: 'a' }, { erase: ['b'] }] }),
+      'paint.1',
+    );
+  });
+
+  it('rejects duplicate, unknown, forward and wrong-kind targets', () => {
+    expectRejectedAt(withErase(['b', 'b']), 'paint.1.erase.1');
+    expectRejectedAt(withErase(['ghost']), 'paint.1.erase.0');
+    expectRejectedAt(withErase(['l']), 'paint.1.erase.0');
+    expectRejectedAt(withErase(['p']), 'paint.1.erase.0');
+    expectRejectedAt(withErase(['rays']), 'paint.1.erase.0');
+    expectRejectedAt(
+      figureSpec({
+        shapes: [circle('a'), arcOf({ id: 'arc' })],
+        paint: [{ stroke: ['a'], width: 0.125 }, { erase: ['arc'] }],
+      }),
+      'paint.1.erase.0',
+    );
+  });
+
+  it('rejects an empty list, more than 32 targets and extra keys', () => {
+    expectRejectedAt(withErase([]), 'paint.1.erase');
+    expectRejectedAt(withErase(Array.from({ length: 33 }, () => 'b')), 'paint.1.erase');
+    expectRejectedAt(
+      figureSpec({
+        shapes: scene,
+        paint: [
+          { stroke: ['a'], width: 0.125 },
+          { erase: ['b'], width: 0.125 },
+        ],
+      }),
+      'paint.1',
+    );
+  });
+
+  it('lists the targets of an erase layer in paintReferences', () => {
+    expect(paintReferences({ erase: ['b', 'tri'] })).toEqual(['b', 'tri']);
+  });
+});

@@ -293,6 +293,21 @@ const polygonShape = z
     }
   });
 
+const arcEnd = z.union([angle, pointSchema], {
+  error: complain(
+    'arc end',
+    `an angle in degrees from -${ANGLE_MAX} to ${ANGLE_MAX}, or a point on the circle ([x, y], an element id, { on, angle } or { intersect: [a, b], near? })`,
+  ),
+});
+
+const arcShape = z.strictObject({
+  id: idSchema,
+  type: z.literal('arc'),
+  on: refId('on'),
+  from: arcEnd,
+  to: arcEnd,
+});
+
 const pointsShape = z.strictObject({
   id: idSchema,
   type: z.literal('points'),
@@ -321,11 +336,20 @@ const repeatShape = z
 
 const shapeSchema = z.discriminatedUnion(
   'type',
-  [pointShape, circleShape, tangentCircleShape, lineShape, polygonShape, pointsShape, repeatShape],
+  [
+    pointShape,
+    circleShape,
+    tangentCircleShape,
+    lineShape,
+    arcShape,
+    polygonShape,
+    pointsShape,
+    repeatShape,
+  ],
   {
     error: complain(
       'type',
-      'one of "point", "circle", "tangent_circle", "line", "polygon", "points", "repeat"',
+      'one of "point", "circle", "tangent_circle", "line", "arc", "polygon", "points", "repeat"',
     ),
   },
 );
@@ -338,10 +362,12 @@ const strokeLayer = z.strictObject({
   color: colorSchema,
 });
 
-const paintSchema = z.union([fillLayer, strokeLayer], {
+const eraseLayer = z.strictObject({ erase: listOf(refId('erase'), 'erase', 1, 32) });
+
+const paintSchema = z.union([fillLayer, strokeLayer, eraseLayer], {
   error: unionError(
     'paint layer',
-    '{ fill: Region, color? } (mark) or { stroke: [ids], width, color? } (figure)',
+    '{ fill: Region, color? } (mark), or { stroke: [ids], width, color? } or { erase: [ids] } (figure)',
     (input) => {
       if (typeof input === 'object' && input !== null && !Array.isArray(input)) {
         if ('fill' in input) {
@@ -349,6 +375,9 @@ const paintSchema = z.union([fillLayer, strokeLayer], {
         }
         if ('stroke' in input) {
           return 1;
+        }
+        if ('erase' in input) {
+          return 2;
         }
       }
       return undefined;
@@ -379,11 +408,13 @@ export type CircleShape = z.infer<typeof circleShape>;
 export type TangentCircleShape = z.infer<typeof tangentCircleShape>;
 export type LineShape = z.infer<typeof lineShape>;
 export type PolygonShape = z.infer<typeof polygonShape>;
+export type ArcShape = z.infer<typeof arcShape>;
 export type PointsShape = z.infer<typeof pointsShape>;
 export type RepeatShape = z.infer<typeof repeatShape>;
 export type CircleLikeShape = CircleShape | TangentCircleShape;
 export type FillLayer = z.infer<typeof fillLayer>;
 export type StrokeLayer = z.infer<typeof strokeLayer>;
+export type EraseLayer = z.infer<typeof eraseLayer>;
 export type PaintLayer = z.infer<typeof paintSchema>;
 export type RuleException = z.infer<typeof exceptionSchema>;
 
@@ -444,6 +475,13 @@ export function shapeReferences(shape: Shape): string[] {
     case 'line':
       ids = [...pointReferences(shape.from), ...pointReferences(shape.to)];
       break;
+    case 'arc':
+      ids = [
+        shape.on,
+        ...(typeof shape.from === 'number' ? [] : pointReferences(shape.from)),
+        ...(typeof shape.to === 'number' ? [] : pointReferences(shape.to)),
+      ];
+      break;
     case 'polygon':
       ids = [shape.in];
       break;
@@ -459,10 +497,14 @@ export function shapeReferences(shape: Shape): string[] {
 
 /** Distinct ids a paint layer references. */
 export function paintReferences(layer: PaintLayer): string[] {
-  const ids =
-    'fill' in layer
-      ? regionReferences(layer.fill)
-      : [...layer.stroke, ...lengthReferences(layer.width)];
+  let ids: string[];
+  if ('fill' in layer) {
+    ids = regionReferences(layer.fill);
+  } else if ('erase' in layer) {
+    ids = layer.erase;
+  } else {
+    ids = [...layer.stroke, ...lengthReferences(layer.width)];
+  }
   return [...new Set(ids)];
 }
 
@@ -500,10 +542,11 @@ const POINT_REF = kindSet('the id of a point, circle or tangent_circle', [
   'tangent_circle',
 ]);
 const LINE_ONLY = kindSet('the id of a line', ['line']);
-const REPEATABLE = kindSet('the id of a circle, tangent_circle, line, polygon or points', [
+const REPEATABLE = kindSet('the id of a circle, tangent_circle, line, arc, polygon or points', [
   'circle',
   'tangent_circle',
   'line',
+  'arc',
   'polygon',
   'points',
 ]);
@@ -511,6 +554,14 @@ const STROKABLE = kindSet('the id of any shape except point', [
   'circle',
   'tangent_circle',
   'line',
+  'arc',
+  'polygon',
+  'points',
+  'repeat',
+]);
+const ERASABLE = kindSet('the id of a circle, tangent_circle, polygon, points or repeat of those', [
+  'circle',
+  'tangent_circle',
   'polygon',
   'points',
   'repeat',
@@ -663,6 +714,15 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
         checkPoint(shape.from, at('from'), i, earlier, 0);
         checkPoint(shape.to, at('to'), i, earlier, 0);
         break;
+      case 'arc':
+        lookup(shape.on, i, at('on'), CIRCLE_LIKE, earlier);
+        for (const key of ['from', 'to'] as const) {
+          const end = shape[key];
+          if (typeof end !== 'number') {
+            checkPoint(end, at(key), i, earlier, 0);
+          }
+        }
+        break;
       case 'polygon':
         lookup(shape.in, i, at('in'), CIRCLE_LIKE, earlier);
         break;
@@ -704,10 +764,10 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
       if (found?.shape.type === 'repeat') {
         for (const id of found.shape.of) {
           const inner = byId.get(id);
-          if (inner !== undefined && inner.shape.type === 'line') {
+          if (inner !== undefined && (inner.shape.type === 'line' || inner.shape.type === 'arc')) {
             add(
               path,
-              `region uses a repeat of a line (received: ${show(region)} repeating ${show(id)}; allowed: a repeat of circles, tangent_circles, polygons or points)`,
+              `region uses a repeat of a ${inner.shape.type} (received: ${show(region)} repeating ${show(id)}; allowed: a repeat of circles, tangent_circles, polygons or points)`,
             );
           }
         }
@@ -751,6 +811,36 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
           'fill region is unbounded (received: a region that can extend to infinity; allowed: a bounded region; intersect a half-plane with a disc, or use a points shape instead)',
         );
       }
+    } else if ('erase' in layer) {
+      if (spec.mode !== 'figure') {
+        add(
+          at(),
+          `erase layer in a ${spec.mode} spec (received: erase; allowed: fill layers when mode is "mark")`,
+        );
+        return;
+      }
+      if (j === 0) {
+        add(
+          at(),
+          'erase layer is first (received: erase as paint[0]; allowed: a stroke layer before it, since an erase layer hides what is drawn earlier)',
+        );
+      }
+      for (const [k, id] of layer.erase.entries()) {
+        lookup(id, total, at('erase', k), ERASABLE, declared);
+        const found = byId.get(id);
+        if (found?.shape.type === 'repeat') {
+          for (const inner of found.shape.of) {
+            const type = byId.get(inner)?.shape.type;
+            if (type === 'line' || type === 'arc') {
+              add(
+                at('erase', k),
+                `erase uses a repeat of a ${type} (received: ${show(id)} repeating ${show(inner)}; allowed: a repeat of circles, tangent_circles, polygons or points)`,
+              );
+            }
+          }
+        }
+      }
+      checkDistinct(layer.erase, at('erase'));
     } else {
       if (spec.mode !== 'figure') {
         add(
