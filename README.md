@@ -11,10 +11,10 @@ It is an MCP server over stdio.
 | Tool | Takes | Returns |
 |---|---|---|
 | `gridsmith_guide` | `topic`: `overview` (default), `spec`, `rules` or `examples` | The cheat sheet, the JSON Schema of a spec, the rule table, or the complete example specs |
-| `gridsmith_render` | `spec` (an object, or an absolute path to a JSON file of at most 256 KB), `views` (optional) | A JSON report and the requested views. Writes nothing |
+| `gridsmith_render` | `spec` (an object, or an absolute path to a JSON file of at most 256 KB), `views` and `underlay` (both optional) | A JSON report and the requested views. Writes nothing |
 | `gridsmith_export` | `spec`, `dir` (absolute), `name`, `overwrite` (optional) | The files written to `dir` |
 
-**`gridsmith_render`** returns a JSON report (resolved geometry, violations, applied exceptions, near-tangent hints, per-layer statistics, `exportable`) followed by the views in the order requested. PNG views are `sheet` (construction sheet), `final` (512 px), `sizes` (mark only: 64, 32 and 16 px side by side) and `guides` (the final drawing with every construction element over it, 512 px). SVG views are returned as text: `svg`, `sheet_svg` and `guides_svg`. An SVG longer than 60000 characters is not returned; it is listed in `truncated` instead. The default is `sheet` and `sizes` for a mark, `sheet` and `final` for a figure. Rule violations are reported and the drawing is still produced.
+**`gridsmith_render`** returns a JSON report (resolved geometry, violations, applied exceptions, near-tangent hints, per-layer statistics, `exportable`) followed by the views in the order requested. PNG views are `sheet` (construction sheet), `final` (512 px), `sizes` (mark only: 64, 32 and 16 px side by side), `guides` (the final drawing with every construction element over it, 512 px) and `match` (the drawing against an `underlay` image, 512 px; see below). SVG views are returned as text: `svg`, `sheet_svg` and `guides_svg`. An SVG longer than 60000 characters is not returned; it is listed in `truncated` instead. The default is `sheet` and `sizes` for a mark, `sheet` and `final` for a figure. Rule violations are reported and the drawing is still produced.
 
 **`gridsmith_export`** writes `<name>.svg`, `<name>-sheet.svg`, `<name>-guides.svg`, `<name>.spec.json` and PNGs: `-512`, `-64`, `-32` and `-16` for a mark, `-1024` for a figure. It refuses a spec that still has violations, and refuses when any target file exists unless `overwrite` is true. `dir` is created if missing.
 
@@ -66,13 +66,14 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 | `arc` | Part of circle `on`, counter-clockwise from `from` to `to` (degrees or points on the circle) |
 | `polygon` | Regular `n`-gon inscribed in circle `in`; `step` of 2 or more gives a star; `rotate` in degrees |
 | `points` | Closed polygon through listed points |
+| `outline` | One closed edge cut from circles and lines declared earlier, joined by tangency or at chosen corners; see below |
 | `repeat` | `n` rotated copies of `of` about `center`; `mirror` adds the reflection across the line at angle `axis` |
 
 **Length.** A number from 0.05 to 64 modules, or an expression: `R` or `<circle id>.r`, followed by `*` or `/` with 2 to 16, `sqrt2`, `sqrt3`, `phi` or `phi2`. For example `"R/2"` or `"outer.r*sqrt3/2"`. No spaces, parentheses, `+` or `-`.
 
 **Point.** `[x, y]`; the id of a point or circle (its centre); `{ "on": circle, "angle": degrees }`; or `{ "intersect": [a, b], "near": point }`, where `near` picks the candidate closest to the point given and may be omitted when there is only one.
 
-**mark** paints filled regions: `paint: [{ "fill": Region, "color": "#rrggbb" }]`. A Region is an id (a circle, polygon, points or a repeat of those), `{ "half": line, "toward": point }` for a half-plane, or `{ "union" | "intersect" | "subtract": [Region, ...] }`. A region must be bounded.
+**mark** paints filled regions: `paint: [{ "fill": Region, "color": "#rrggbb" }]`. A Region is an id (a circle, polygon, points, outline or a repeat of those), `{ "half": line, "toward": point }` for a half-plane, or `{ "union" | "intersect" | "subtract": [Region, ...] }`. A region must be bounded.
 
 **figure** paints strokes: `{ "stroke": [ids], "width": Length, "color": ... }`. Circles draw as circumferences, lines as segments, arcs as partial circumferences, polygons as outlines and a repeat as every copy. An `{ "erase": [ids] }` layer (never first) hides every earlier layer inside the listed circles, polygons or points, so later layers can draw medallions over bands. Circles that nothing strokes may serve as helpers.
 
@@ -83,7 +84,7 @@ A mark and a figure never mix: a mark takes only `fill` layers, a figure only `s
 | Rule | Meaning |
 |---|---|
 | `ratio_count` | At most 3 distinct ratios across radii and widths; "R/2" and "R*2" count once |
-| `circle_count` | At most 8 circles in a mark, 16 in a figure; arcs do not count |
+| `circle_count` | At most 8 circles in a mark, 16 in a figure; arcs do not count. A mark whose fill reaches an `outline` may have 40 |
 | `off_grid` | Numeric coordinates and radii are multiples of 0.5 module (mark) or 0.25 (figure) |
 | `angle` | Angles are multiples of 180/n for n in 2, 3, 4, 5, 6, 8, 10, 12, 20, 24; `polygon.n` and `repeat.n` come from the same set |
 | `off_canvas` | Everything drawn stays inside the canvas |
@@ -91,6 +92,14 @@ A mark and a figure never mix: a mark takes only `fill` layers, a figure only `s
 | `thin_stroke` | A stroke is at least 1 px wide with the canvas drawn at 512 px (figure) |
 | `unused_shape` | Every element is reachable from a paint layer |
 | `unused_exception` | An exception that matches no violation is reported; it cannot itself be excused |
+
+### Outlines and underlay
+
+**`outline`** draws a figurative silhouette from construction circles instead of coordinates. `through` lists 2 to 64 pieces counter-clockwise, with the inside on the left. A piece is an id, or `{ "on": id, "concave": true, "corner": point }`; `on` is a circle, `tangent_circle` or `line`. A circle piece bulges outward, and `concave: true` carves inward. Each piece ends where it meets the next one, and the last meets the first. Pieces that touch are joined at the tangent point. Pieces that cross are joined at a corner, and `corner` picks which of the two intersections. An outline works where `points` does: as a mark fill, a figure stroke or erase, or in a `repeat`. The report's `geometry` lists its pieces, its corners with the signed turn in degrees (left turns positive) and its area.
+
+**`underlay`** compares a drawing with a reference image. Pass `underlay: { "path": ..., "box"?, "threshold"?, "invert"? }` to `gridsmith_render`. `path` is an absolute path to a PNG or JPEG of at most 4 MiB and 16 million pixels. The foreground is found from the alpha channel, or from luminance with an Otsu threshold (`threshold` 1 to 254 overrides it, `invert` swaps the sides). Its bounding box is fitted into `box` (modules, default the grid square) and the sheet shows it in orange behind the drawing. Every opaque pixel counts as ink, so cut a hole with `subtract` instead of painting it white.
+
+With an underlay the report gains `match`: `iou` (1 means identical), `missing` and `excess` as shares, `offset` (drawing centre minus reference centre), `grid` (12 rows, top first: `-` missing, `+` excess, `.` fine), up to three `blobs` (kind, share of the reference area, centre, box) and `underlay` (the placement, threshold and polarity used). The `match` view is a 512 px PNG: both in dark grey, reference only in orange, drawing only in blue. Fix the largest blob or grid region and render again. Compare a figure with a line drawing, not with a filled silhouette. `gridsmith_export` does not take an underlay.
 
 ## Gallery
 
@@ -141,6 +150,16 @@ Spec: [`docs/gallery/open-ring.json`](docs/gallery/open-ring.json)
 Two discs of radius R centred at [0, -2.5] and [0, 2.5] intersect in a lens. A disc of radius 1 is subtracted from it as the iris, and a disc of radius 0.5 is united back as the pupil.
 
 Spec: [`docs/gallery/eye.json`](docs/gallery/eye.json)
+
+#### whale
+
+<p><img src="docs/gallery/whale.png" alt="whale" width="300"> <img src="docs/gallery/whale-sheet.png" alt="whale construction sheet" width="300"></p>
+
+A whale silhouette from a single `outline` through seven circles on an 8-division grid. `head` is a round circle; `belly` and `back` are tangent circles of radius 8 that each touch the head from inside and one bay from outside, so the body tapers to the tail without a corner. `fluke_l` and `fluke_r` meet at corners, and `bay_l` and `bay_r` are carved in (`concave`). A disc of radius 0.5 is subtracted as the eye, and the spout is two crescents, each a disc minus a disc. To fit a shape like this to a picture, render it with `underlay` set to the picture and read `match`.
+
+<p><img src="docs/gallery/whale-guides.png" alt="whale with guide lines" width="300"></p>
+
+Spec: [`docs/gallery/whale.json`](docs/gallery/whale.json)
 
 ### figure
 

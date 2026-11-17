@@ -88,6 +88,48 @@ describe('guide examples', () => {
     expect(JSON.stringify(example?.spec).length).toBeLessThanOrEqual(700);
   });
 
+  describe('whale', () => {
+    const example = EXAMPLES.find((e) => e.name === 'whale');
+    const resolved = () => {
+      const result = resolveSpec(specSchema.parse(example?.spec));
+      if (!result.ok) {
+        throw new Error(JSON.stringify(result.errors));
+      }
+      return result.model;
+    };
+
+    it('is a mark with one outline of seven pieces', () => {
+      expect(example?.spec.mode).toBe('mark');
+      const outlines = example?.spec.shapes.filter((s) => s.type === 'outline') ?? [];
+      expect(outlines).toHaveLength(1);
+      expect(outlines[0]?.type === 'outline' && outlines[0].through).toHaveLength(7);
+    });
+
+    it('has twelve circles, three corners and two concave pieces', () => {
+      const shapes = example?.spec.shapes ?? [];
+      expect(shapes.filter((s) => s.type === 'circle' || s.type === 'tangent_circle')).toHaveLength(
+        12,
+      );
+      const outline = shapes.find((s) => s.type === 'outline');
+      const pieces = outline?.type === 'outline' ? outline.through : [];
+      const objects = pieces.filter((p) => typeof p !== 'string');
+      expect(objects.filter((p) => p.corner !== undefined)).toHaveLength(3);
+      expect(objects.filter((p) => p.concave === true)).toHaveLength(2);
+    });
+
+    it('fills the silhouette minus the eye plus two spout crescents', () => {
+      const { fills } = evaluateExample(example?.spec);
+      expect(fills).toHaveLength(1);
+      expect(fills[0]?.area).toBeCloseTo(87.6634, 4);
+    });
+
+    it('resolves its outline and eye into the model', () => {
+      const model = resolved();
+      expect(model.elements.some((el) => el.id === 'whale')).toBe(true);
+      expect(model.fills).toHaveLength(1);
+    });
+  });
+
   for (const example of EXAMPLES) {
     describe(example.name, () => {
       it('validates, resolves and lints without violations or exceptions', () => {

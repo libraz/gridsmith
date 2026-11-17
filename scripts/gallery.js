@@ -97,12 +97,23 @@ if (check) {
     }
   }
   for (const example of EXAMPLES) {
-    const file = join(galleryDir, `${example.name}.json`);
+    const json = `${example.name}.json`;
     if (
-      present.has(`${example.name}.json`) &&
-      (await readFile(file, 'utf8')) !== specJson(example)
+      present.has(json) &&
+      (await readFile(join(galleryDir, json), 'utf8')) !== specJson(example)
     ) {
-      problems.push(`stale: docs/gallery/${example.name}.json differs from the example spec`);
+      problems.push(`stale: docs/gallery/${json} differs from the example spec`);
+    }
+    const svg = `${example.name}.svg`;
+    if (present.has(svg)) {
+      try {
+        const expected = render(example).get(svg);
+        if ((await readFile(join(galleryDir, svg), 'utf8')) !== expected) {
+          problems.push(`stale: docs/gallery/${svg} differs from the rendered example`);
+        }
+      } catch (error) {
+        problems.push(`example "${example.name}": ${error.message}`);
+      }
     }
   }
   if (problems.length > 0) {

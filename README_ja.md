@@ -11,10 +11,10 @@ stdio の MCP サーバーです。
 | ツール | 入力 | 返すもの |
 |---|---|---|
 | `gridsmith_guide` | `topic`: `overview`（既定）、`spec`、`rules`、`examples` | 早見表、仕様の JSON Schema、規則表、規則を通る完全な例 |
-| `gridsmith_render` | `spec`（オブジェクト、または 256 KB 以下の JSON ファイルの絶対パス）、`views`（省略可） | JSON レポートと指定したビュー。何も書き込みません |
+| `gridsmith_render` | `spec`（オブジェクト、または 256 KB 以下の JSON ファイルの絶対パス）、`views` と `underlay`（どちらも省略可） | JSON レポートと指定したビュー。何も書き込みません |
 | `gridsmith_export` | `spec`、`dir`（絶対パス）、`name`、`overwrite`（省略可） | `dir` に書き出したファイル |
 
-**`gridsmith_render`** は、JSON レポート（解決済みの幾何、違反、適用済みの例外、近接接触のヒント、レイヤーごとの統計、`exportable`）に続けて、指定した順にビューを返します。PNG ビューは `sheet`（構築シート）、`final`（512 px）、`sizes`（mark のみ。64、32、16 px を並べたもの）、`guides`（完成図に構築要素をすべて重ねたもの、512 px）です。SVG ビューはテキストで返ります（`svg`、`sheet_svg`、`guides_svg`）。60000 文字を超える SVG は返さず、`truncated` に記載します。既定は mark なら `sheet` と `sizes`、figure なら `sheet` と `final` です。規則違反があっても報告したうえで描画します。
+**`gridsmith_render`** は、JSON レポート（解決済みの幾何、違反、適用済みの例外、近接接触のヒント、レイヤーごとの統計、`exportable`）に続けて、指定した順にビューを返します。PNG ビューは `sheet`（構築シート）、`final`（512 px）、`sizes`（mark のみ。64、32、16 px を並べたもの）、`guides`（完成図に構築要素をすべて重ねたもの、512 px）、`match`（完成図と `underlay` の画像の比較、512 px。後述）です。SVG ビューはテキストで返ります（`svg`、`sheet_svg`、`guides_svg`）。60000 文字を超える SVG は返さず、`truncated` に記載します。既定は mark なら `sheet` と `sizes`、figure なら `sheet` と `final` です。規則違反があっても報告したうえで描画します。
 
 **`gridsmith_export`** は `<name>.svg`、`<name>-sheet.svg`、`<name>-guides.svg`、`<name>.spec.json` と PNG を書き出します。PNG は mark なら `-512`、`-64`、`-32`、`-16`、figure なら `-1024` です。違反が残る仕様は拒否します。出力先に同名のファイルがあるときも、`overwrite` が true でなければ拒否します。`dir` がなければ作成します。
 
@@ -66,13 +66,14 @@ yarn gallery   # src/guide/examples.ts の例から docs/gallery/ を再生成
 | `arc` | 円 `on` の一部。`from` から `to` へ反時計回り（度数、または円上の点） |
 | `polygon` | 円 `in` に内接する正 `n` 角形。`step` が 2 以上なら星形、`rotate` は度数 |
 | `points` | 指定した点を通る閉じた多角形 |
+| `outline` | 先に宣言した円と線から切り出した、閉じた1本の縁。接点か指定した角でつなぎます（後述） |
 | `repeat` | `of` を `center` まわりに `n` 回回転した複製。`mirror` を付けると角度 `axis` の線に関する反転も加わります |
 
 **Length。** 0.05 から 64 モジュールの数値、または式です。式は `R` か `<circle id>.r` に、`*` または `/` と、2 から 16、`sqrt2`、`sqrt3`、`phi`、`phi2` のいずれかを続けます。例: `"R/2"`、`"outer.r*sqrt3/2"`。空白、括弧、`+`、`-` は使えません。
 
 **点。** `[x, y]`、点または円の id（円なら中心）、`{ "on": 円, "angle": 度数 }`、`{ "intersect": [a, b], "near": 点 }` のいずれかです。`near` は指定した点に最も近い候補を選び、候補が1つなら省略できます。
 
-**mark** は塗りつぶした領域を描きます。`paint: [{ "fill": Region, "color": "#rrggbb" }]` と書きます。Region は id（円、多角形、points、またはそれらの repeat）、半平面を表す `{ "half": 線, "toward": 点 }`、`{ "union" | "intersect" | "subtract": [Region, ...] }` のいずれかで、有界でなければなりません。
+**mark** は塗りつぶした領域を描きます。`paint: [{ "fill": Region, "color": "#rrggbb" }]` と書きます。Region は id（円、多角形、points、outline、またはそれらの repeat）、半平面を表す `{ "half": 線, "toward": 点 }`、`{ "union" | "intersect" | "subtract": [Region, ...] }` のいずれかで、有界でなければなりません。
 
 **figure** は線を描きます。`{ "stroke": [id], "width": Length, "color": ... }` と書きます。円は円周、線は線分、円弧は円周の一部、多角形は輪郭、repeat はすべての複製として描かれます。`{ "erase": [id] }` レイヤー（先頭には置けません）は、指定した円、多角形、points の内側にある先行レイヤーをすべて隠すので、後のレイヤーで帯の上にメダリオンを描けます。どのレイヤーにも描かれない円は補助線として使えます。
 
@@ -83,7 +84,7 @@ mark と figure は混在できません。mark は `fill` レイヤーだけ、
 | 規則 | 内容 |
 |---|---|
 | `ratio_count` | 半径と線幅で使う比は最大 3 種類。"R/2" と "R*2" は同じ比として数えます |
-| `circle_count` | 円は mark で最大 8 個、figure で最大 16 個。円弧は数えません |
+| `circle_count` | 円は mark で最大 8 個、figure で最大 16 個。円弧は数えません。塗りから届く `outline` を持つ mark は 40 個まで |
 | `off_grid` | 数値の座標と半径は 0.5 モジュール（mark）または 0.25（figure）の倍数 |
 | `angle` | 角度は n が 2、3、4、5、6、8、10、12、20、24 のいずれかのときの 180/n の倍数。`polygon.n` と `repeat.n` も同じ集合から選ぶ |
 | `off_canvas` | 描画物はキャンバスの内側に収まる |
@@ -91,6 +92,14 @@ mark と figure は混在できません。mark は `fill` レイヤーだけ、
 | `thin_stroke` | キャンバスを 512 px で描いたとき、線幅が 1 px 以上（figure） |
 | `unused_shape` | すべての要素が paint レイヤーから参照でたどれる |
 | `unused_exception` | どの違反にも一致しない例外は報告される。この規則自体は許容できない |
+
+### outline と underlay
+
+**`outline`** は、座標を書かずに、構築用の円から具象的なシルエットを描きます。`through` に 2 から 64 個の部品を、内側が左になる反時計回りで並べます。部品は id、または `{ "on": id, "concave": true, "corner": 点 }` です。`on` は円、`tangent_circle`、`line` のいずれかです。円の部品は外側にふくらみ、`concave: true` なら内側へえぐります。各部品は次の部品と出会う所で終わり、最後の部品は最初の部品と出会います。接する部品は接点でつなぎ、交わる部品は角でつなぎます。2つの交点のどちらを使うかは `corner` で選びます。`outline` は `points` が使える所で使えます。mark の fill、figure の stroke と erase、`repeat` です。レポートの `geometry` には、部品、角（符号つきの度数で、左に曲がる角が正）、面積が載ります。
+
+**`underlay`** は、描いた図形と参照画像を比べます。`gridsmith_render` に `underlay: { "path": ..., "box"?, "threshold"?, "invert"? }` を渡します。`path` は 4 MiB 以下、1600 万画素以下の PNG または JPEG の絶対パスです。前景はアルファチャンネルから、なければ輝度の大津の二値化で求めます（`threshold` の 1 から 254 で上書きでき、`invert` で前景と背景を入れ替えます）。前景の外接矩形を `box`（モジュール単位、既定はグリッドの正方形）に収め、構築シートでは完成図の後ろにオレンジで表示します。不透明な画素はすべてインクとして数えるので、穴は白で塗らず `subtract` で抜いてください。
+
+下絵を渡すと、レポートに `match` が加わります。`iou`（1 なら完全に一致）、割合で表した `missing` と `excess`、`offset`（図形の中心から参照の中心を引いたもの）、`grid`（12 行、上から順に。`-` が不足、`+` が余分、`.` が一致）、最大 3 つの `blobs`（種別、参照の面積に対する割合、中心、外接矩形）、`underlay`（実際に使った配置、しきい値、極性）です。`match` ビューは 512 px の PNG で、両方にある部分は濃いグレー、参照だけはオレンジ、図形だけは青です。最も大きい blob かグリッドの領域を直して、再度描画してください。figure は、塗りのシルエットではなく線画と比べてください。`gridsmith_export` は下絵を受け付けません。
 
 ## ギャラリー
 
@@ -141,6 +150,16 @@ mark と figure は混在できません。mark は `fill` レイヤーだけ、
 半径 R の2つの円板（中心 [0, -2.5] と [0, 2.5]）の共通部分がレンズ形になります。ここから半径 1 の円板を虹彩として引き、半径 0.5 の円板を瞳として合成しています。
 
 仕様: [`docs/gallery/eye.json`](docs/gallery/eye.json)
+
+#### whale
+
+<p><img src="docs/gallery/whale.png" alt="whale" width="300"> <img src="docs/gallery/whale-sheet.png" alt="whale の構築シート" width="300"></p>
+
+8 分割のグリッド上で、7 個の円を通る1つの `outline` からクジラのシルエットを作っています。`head` は真円で、`belly` と `back` は半径 8 の接円です。それぞれ `head` に内側から、片方の湾に外側から接するため、胴体は角を作らずに尾へ細くなります。`fluke_l` と `fluke_r` は角でつながり、`bay_l` と `bay_r` は `concave` でえぐっています。半径 0.5 の円板を目として引き、潮吹きは円板から円板を引いた 2 つの三日月で作っています。この種の形を絵に合わせるときは、その絵を `underlay` に指定して描画し、`match` を読みます。
+
+<p><img src="docs/gallery/whale-guides.png" alt="whale のガイド線付き" width="300"></p>
+
+仕様: [`docs/gallery/whale.json`](docs/gallery/whale.json)
 
 ### figure
 

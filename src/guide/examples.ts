@@ -159,6 +159,54 @@ export const EXAMPLES: Example[] = [
     },
   },
   {
+    name: 'whale',
+    description:
+      'A whale silhouette as one outline through circles: a round head, tangent-circle belly and back tapering to two flukes joined at corners, with an eye cut out and a two-crescent spout.',
+    spec: {
+      version: 1,
+      mode: 'mark',
+      grid: { divisions: 8 },
+      shapes: [
+        { id: 'head', type: 'circle', center: [-3.5, -1], r: 4 },
+        { id: 'bay_l', type: 'circle', center: [3, 2.5], r: 1.5 },
+        { id: 'bay_r', type: 'circle', center: [7, 2.5], r: 1.5 },
+        { id: 'belly', type: 'tangent_circle', r: 8, to: ['head', 'bay_r'], near: [-1, 3] },
+        { id: 'back', type: 'tangent_circle', r: 8, to: ['head', 'bay_l'], near: [-5, -5] },
+        { id: 'fluke_l', type: 'circle', center: [4, 3], r: 2 },
+        { id: 'fluke_r', type: 'circle', center: [6, 3], r: 2 },
+        { id: 'eye', type: 'circle', center: [-5, -2], r: 0.5 },
+        { id: 'jet_l', type: 'circle', center: [-5, 5], r: 1.5 },
+        { id: 'jet_l_cut', type: 'circle', center: [-5.5, 4.5], r: 1.5 },
+        { id: 'jet_r', type: 'circle', center: [-2, 5], r: 1.5 },
+        { id: 'jet_r_cut', type: 'circle', center: [-1.5, 4.5], r: 1.5 },
+        {
+          id: 'whale',
+          type: 'outline',
+          through: [
+            'belly',
+            { on: 'bay_r', concave: true, corner: [8.2, 3.5] },
+            { on: 'fluke_r', corner: [5, 4.7] },
+            { on: 'fluke_l', corner: [1.8, 3.5] },
+            { on: 'bay_l', concave: true },
+            'back',
+            'head',
+          ],
+        },
+      ],
+      paint: [
+        {
+          fill: {
+            union: [
+              { subtract: ['whale', 'eye'] },
+              { subtract: ['jet_l', 'jet_l_cut'] },
+              { subtract: ['jet_r', 'jet_r_cut'] },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  {
     name: 'hexagram-circle',
     description: 'Three concentric circles, a hexagram, and a band of twelve small circles.',
     spec: {
