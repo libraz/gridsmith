@@ -1,1 +1,5 @@
 backup/
+node_modules/
+dist/
+coverage/
+.yarn/install-state.gz
