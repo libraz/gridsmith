@@ -1522,3 +1522,88 @@ describe('arcs and erase layers through the tools', () => {
     expect(result.isError, textOf(result)).toBeFalsy();
   });
 });
+
+describe('outline element through the tools', () => {
+  const outline = (through: unknown[], id = 'o'): Obj => ({ id, type: 'outline', through });
+
+  const WHALE: Obj = {
+    version: 1,
+    mode: 'mark',
+    grid: { divisions: 8 },
+    shapes: [
+      circle('head', 3, [-5, -1]),
+      circle('belly', 9, [-1, 4]),
+      circle('bay_l', 2, [1, 2]),
+      circle('bay_r', 2, [7, 2]),
+      { id: 'rump', type: 'tangent_circle', r: 2, to: ['belly', 'bay_r'], near: [3.5, -0.5] },
+      { id: 'back', type: 'tangent_circle', r: 7, to: ['head', 'bay_l'], near: [-3.3, -4.6] },
+      circle('fluke_l', 3, [2.5, 2.5]),
+      circle('fluke_r', 3, [5.5, 2.5]),
+      circle('eye', 0.5, [-5.5, 0]),
+      outline(
+        [
+          'belly',
+          'rump',
+          { on: 'bay_r', concave: true, corner: [8, 3.6] },
+          { on: 'fluke_r', corner: [4.3, 5.2] },
+          { on: 'fluke_l', corner: [0, 3.6] },
+          { on: 'bay_l', concave: true },
+          'back',
+          { on: 'head', corner: [-7.5, -3] },
+        ],
+        'whale',
+      ),
+    ],
+    paint: [{ fill: { subtract: ['whale', 'eye'] } }],
+  };
+
+  it('reports pieces that do not touch as a tool error naming the piece ids', async () => {
+    const spec = mk('o', [
+      circle('c1', 1, [-3, 0]),
+      circle('c2', 1, [3, 0]),
+      outline(['c1', 'c2']),
+    ]);
+    await rejected(
+      'gridsmith_render',
+      renderArgs(spec),
+      'spec.shapes[5] (id "o")',
+      'do not touch',
+      '"c1"',
+      '"c2"',
+    );
+  });
+
+  it('asks for a corner where two circles cross', async () => {
+    const spec = mk('o', [
+      circle('c1', 3, [-1, 0]),
+      circle('c2', 3, [1, 0]),
+      outline(['c1', 'c2']),
+    ]);
+    await rejected(
+      'gridsmith_render',
+      renderArgs(spec),
+      'spec.shapes[5] (id "o")',
+      'needs a corner',
+      '"c1"',
+      '"c2"',
+    );
+  });
+
+  it('lists the outline in the geometry with its piece count, corners and area', async () => {
+    const result = await call('gridsmith_render', renderArgs(WHALE));
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const geometry = (JSON.parse(textOf(result)) as { geometry: Obj[] }).geometry;
+    const entry = geometry.find((g) => g.id === 'whale') as Obj;
+    expect(entry.type).toBe('outline');
+    expect(entry.pieces).toBe(8);
+    const corners = entry.corners as number[][];
+    expect(corners).toHaveLength(4);
+    for (const corner of corners) {
+      expect(corner).toHaveLength(3);
+      expect(Math.abs(corner[2] ?? 0)).toBeGreaterThan(0);
+      expect(Math.abs(corner[2] ?? 0)).toBeLessThanOrEqual(180);
+    }
+    expect(entry.area as number).toBeCloseTo(88.694866, 3);
+    expect(Object.keys(entry).sort()).toEqual(['area', 'corners', 'id', 'pieces', 'type']);
+  });
+});

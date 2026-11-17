@@ -1043,3 +1043,204 @@ describe('erase layers', () => {
     expect(paintReferences({ erase: ['b', 'tri'] })).toEqual(['b', 'tri']);
   });
 });
+
+describe('outline element', () => {
+  const baseShapes = (): Obj[] => [
+    circle('a'),
+    circle('b', { r: 2 }),
+    { id: 'l', type: 'line', from: [0, 0], to: [1, 0] },
+  ];
+  const OUTLINE_AT = 3;
+  const outlineOf = (through: unknown, extra: Obj = {}): Obj => ({
+    id: 'o',
+    type: 'outline',
+    through,
+    ...extra,
+  });
+  const markWith = (through: unknown, more: Obj[] = []): Obj =>
+    markSpec({ shapes: [...baseShapes(), ...more, outlineOf(through)], paint: [{ fill: 'o' }] });
+  const messages = (input: unknown): string[] => {
+    const result = specSchema.safeParse(input);
+    return result.success ? [] : result.error.issues.map((i) => i.message);
+  };
+  const chain = (levels: number): unknown =>
+    levels === 0 ? [1, 1] : { intersect: ['a', 'b'], near: chain(levels - 1) };
+
+  it('accepts id and { on, concave, corner } pieces', () => {
+    const through = [
+      'a',
+      { on: 'b', concave: true },
+      { on: 'l' },
+      { on: 'a', concave: false, corner: [1, 1] },
+    ];
+    expect(accepted(markWith(through))).toBe(true);
+    expect(accepted(markWith(['a', 'b']))).toBe(true);
+  });
+
+  it('accepts a tangent_circle piece and corner references', () => {
+    const tangent = { id: 't', type: 'tangent_circle', r: 1, to: ['a', 'b'], near: [0, 2] };
+    const pt = { id: 'pt', type: 'point', at: [1, 1] };
+    expect(
+      accepted(
+        markWith(
+          ['a', { on: 't', corner: 'pt' }, { on: 'b', corner: { on: 'a', angle: 0 } }],
+          [tangent, pt],
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it('requires 2 to 64 pieces', () => {
+    expectRejectedAt(markWith(['a']), `shapes.${OUTLINE_AT}.through`);
+    expectRejectedAt(markWith([]), `shapes.${OUTLINE_AT}.through`);
+    expect(accepted(markWith(['a', 'b']))).toBe(true);
+    expect(accepted(markWith(Array.from({ length: 64 }, () => 'a')))).toBe(true);
+    expectRejectedAt(
+      markWith(Array.from({ length: 65 }, () => 'a')),
+      `shapes.${OUTLINE_AT}.through`,
+    );
+  });
+
+  it('rejects unknown, forward and self ids', () => {
+    expectRejectedAt(markWith(['a', 'zz']), `shapes.${OUTLINE_AT}.through.1`);
+    expectRejectedAt(markWith(['a', { on: 'zz' }]), `shapes.${OUTLINE_AT}.through.1.on`);
+    expectRejectedAt(markWith(['a', 'o']), `shapes.${OUTLINE_AT}.through.1`);
+    expectRejectedAt(markWith(['a', { on: 'o' }]), `shapes.${OUTLINE_AT}.through.1.on`);
+    const forward = markSpec({
+      shapes: [...baseShapes(), outlineOf(['a', 'late']), circle('late')],
+      paint: [{ fill: 'o' }],
+    });
+    expectRejectedAt(forward, `shapes.${OUTLINE_AT}.through.1`);
+    expect(messages(forward).join('\n')).toContain('forward reference');
+  });
+
+  it('rejects an on that is not a circle, tangent_circle or line', () => {
+    const others: Obj[] = [
+      { id: 'pt', type: 'point', at: [0, 0] },
+      { id: 'pg', type: 'polygon', in: 'a', n: 3 },
+      {
+        id: 'ps',
+        type: 'points',
+        through: [
+          [0, 0],
+          [1, 0],
+          [0, 1],
+        ],
+      },
+      { id: 'ar', type: 'arc', on: 'a', from: 30, to: 150 },
+      { id: 'rp', type: 'repeat', of: ['a'], n: 3 },
+      outlineOf(['a', 'b'], { id: 'prev' }),
+    ];
+    for (const other of others) {
+      const id = String(other.id);
+      expectRejectedAt(markWith(['a', { on: id }], [other]), 'shapes.4.through.1.on');
+      expectRejectedAt(markWith(['a', id], [other]), 'shapes.4.through.1');
+    }
+  });
+
+  it('rejects concave on a line piece but accepts it on circles', () => {
+    expectRejectedAt(markWith(['a', { on: 'l', concave: true }]), 'shapes.3.through.1.concave');
+    expectRejectedAt(markWith(['a', { on: 'l', concave: false }]), 'shapes.3.through.1.concave');
+    expect(accepted(markWith(['a', { on: 'l' }]))).toBe(true);
+  });
+
+  it('rejects a non-boolean concave', () => {
+    for (const concave of [1, 'true', null, 0]) {
+      expectRejectedAt(markWith(['a', { on: 'b', concave }]), 'shapes.3.through.1');
+    }
+  });
+
+  it('rejects unknown piece keys and a missing on', () => {
+    expectRejectedAt(markWith(['a', { on: 'b', bulge: 1 }]), 'shapes.3.through.1');
+    expectRejectedAt(markWith(['a', { concave: true }]), 'shapes.3.through.1');
+    expectRejectedAt(markWith(['a', 5]), 'shapes.3.through.1');
+  });
+
+  it('checks corner like other points', () => {
+    expectRejectedAt(markWith(['a', { on: 'b', corner: [1] }]), 'shapes.3.through.1');
+    expectRejectedAt(markWith(['a', { on: 'b', corner: [99, 0] }]), 'shapes.3.through.1');
+    expectRejectedAt(markWith(['a', { on: 'b', corner: 'zz' }]), 'shapes.3.through.1.corner');
+    expectRejectedAt(markWith(['a', { on: 'b', corner: 'o' }]), 'shapes.3.through.1.corner');
+    expectRejectedAt(
+      markWith(['a', { on: 'b', corner: { on: 'l', angle: 0 } }]),
+      'shapes.3.through.1.corner.on',
+    );
+  });
+
+  it('counts corner nesting from 1 like near', () => {
+    expect(accepted(markWith(['a', { on: 'b', corner: chain(2) }]))).toBe(true);
+    expectRejectedAt(
+      markWith(['a', { on: 'b', corner: chain(3) }]),
+      'shapes.3.through.1.corner.near.near',
+    );
+  });
+
+  it('is allowed as a region leaf, stroke, erase and repeat target', () => {
+    const shapes = [...baseShapes(), outlineOf(['a', 'b'])];
+    expect(accepted(markSpec({ shapes, paint: [{ fill: { subtract: ['a', 'o'] } }] }))).toBe(true);
+    expect(
+      accepted(figureSpec({ shapes, paint: [{ stroke: ['o'], width: 0.125 }, { erase: ['o'] }] })),
+    ).toBe(true);
+    const repeated = [...shapes, { id: 'rp', type: 'repeat', of: ['o'], n: 3 }];
+    expect(accepted(markSpec({ shapes: repeated, paint: [{ fill: 'rp' }] }))).toBe(true);
+    expect(
+      accepted(figureSpec({ shapes: repeated, paint: [{ stroke: ['rp'], width: 0.125 }] })),
+    ).toBe(true);
+  });
+
+  it('is rejected in tangent_circle.to, intersect, on, in and .r', () => {
+    const o = outlineOf(['a', 'b']);
+    const withOutlineFirst = (shape: Obj): Obj =>
+      markSpec({ shapes: [...baseShapes(), o, shape], paint: [{ fill: 'a' }] });
+    expectRejectedAt(
+      withOutlineFirst({ id: 't', type: 'tangent_circle', r: 1, to: ['a', 'o'], near: [0, 2] }),
+      'shapes.4.to.1',
+    );
+    expectRejectedAt(
+      withOutlineFirst({ id: 'p', type: 'point', at: { intersect: ['a', 'o'] } }),
+      'shapes.4.at.intersect.1',
+    );
+    expectRejectedAt(
+      withOutlineFirst(circle('c', { center: { on: 'o', angle: 0 } })),
+      'shapes.4.center.on',
+    );
+    expectRejectedAt(withOutlineFirst({ id: 'pg', type: 'polygon', in: 'o', n: 3 }), 'shapes.4.in');
+    expectRejectedAt(withOutlineFirst(circle('c', { r: 'o.r/2' })), 'shapes.4.r');
+  });
+
+  it('lists the ids and corner references of a piece list', () => {
+    const shape = specSchema
+      .parse(
+        markWith(
+          ['a', { on: 'b', corner: { intersect: ['a', 'l'], near: 'pt' } }, { on: 'l' }],
+          [{ id: 'pt', type: 'point', at: [1, 1] }],
+        ),
+      )
+      .shapes.find((s) => s.id === 'o');
+    expect(shape).toBeDefined();
+    expect(shapeReferences(shape as Shape)).toEqual(['a', 'b', 'l', 'pt']);
+  });
+
+  it('is a bounded region leaf', () => {
+    expect(isRegionBounded('o')).toBe(true);
+    expect(isRegionBounded({ intersect: ['o', { half: 'l', toward: [0, 1] }] })).toBe(true);
+  });
+
+  it('adds its piece count to the mark support curves', () => {
+    const pieces = (n: number) => Array.from({ length: n }, () => 'a');
+    const spec = (n: number): Obj =>
+      markSpec({
+        shapes: [circle('a'), outlineOf(pieces(n))],
+        paint: [{ fill: 'o' }],
+      });
+    // 1 circle + 64 pieces per outline copy; 4 repeated copies reach 4 * 64 = 256 plus the circle.
+    const repeated = (n: number): Obj =>
+      markSpec({
+        shapes: [circle('a'), outlineOf(pieces(64)), { id: 'rp', type: 'repeat', of: ['o'], n }],
+        paint: [{ fill: 'rp' }],
+      });
+    expect(accepted(spec(64))).toBe(true);
+    expect(accepted(repeated(3))).toBe(true);
+    expectRejectedAt(repeated(4), 'shapes.2');
+  });
+});

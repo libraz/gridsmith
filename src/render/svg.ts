@@ -1,4 +1,5 @@
 import type { ArcEdge, FillResult, Loop } from '../geom/arrangement.js';
+import type { ChainPiece } from '../geom/chain.js';
 import type { Vec } from '../geom/primitives.js';
 import type { EraseShape, ResolvedErase, ResolvedModel, StrokeItem } from '../resolve/resolve.js';
 
@@ -64,6 +65,41 @@ export function loopsToPathData(loops: readonly Loop[]): string {
   return out.join(' ');
 }
 
+/**
+ * One closed path through chain pieces: `M`, `L`, `A` (at most 120 degrees each) and `Z`.
+ * `place` maps a module point to output coordinates (default: y flipped) and `scale` is the
+ * module-to-output length factor, so the construction sheet reuses it in its own frame.
+ */
+export function chainPathData(
+  pieces: readonly ChainPiece[],
+  place: (p: Vec) => Vec = (p) => ({ x: p.x, y: -p.y }),
+  scale = 1,
+): string {
+  const first = pieces[0];
+  if (first === undefined) {
+    return '';
+  }
+  const at = (p: Vec): string => {
+    const q = place(p);
+    return `${num(q.x)} ${num(q.y)}`;
+  };
+  const out: string[] = [`M ${at(first.start)}`];
+  for (const piece of pieces) {
+    if (piece.kind === 'line') {
+      out.push(`L ${at(piece.end)}`);
+      continue;
+    }
+    const { cx, cy, r } = piece.circle;
+    const sweep = piece.ccw ? 0 : 1;
+    const parts = arcParts({ cx, cy, r, from: piece.start, to: piece.end, ccw: piece.ccw });
+    for (const end of parts) {
+      out.push(`A ${num(r * scale)} ${num(r * scale)} 0 0 ${sweep} ${at(end)}`);
+    }
+  }
+  out.push('Z');
+  return out.join(' ');
+}
+
 const STROKE_ATTRS = 'fill="none" stroke-linejoin="round" stroke-linecap="round"';
 
 function strokeItemMarkup(item: StrokeItem, width: number, color: string): string[] {
@@ -88,6 +124,8 @@ function strokeItemMarkup(item: StrokeItem, width: number, color: string): strin
     }
     case 'polygon':
       return item.loops.map((loop) => `<polygon points="${loop.map(pt).join(' ')}" ${style}/>`);
+    case 'chain':
+      return [`<path d="${chainPathData(item.pieces)}" ${style}/>`];
   }
 }
 
@@ -100,6 +138,9 @@ const eraseShapeMarkup = (shape: EraseShape): string[] => {
     return [
       `<circle cx="${num(shape.circle.cx)}" cy="${num(-shape.circle.cy)}" r="${num(shape.circle.r)}" ${style}/>`,
     ];
+  }
+  if (shape.kind === 'chain') {
+    return [`<path d="${chainPathData(shape.pieces)}" ${style}/>`];
   }
   return shape.loops.map((loop) => `<polygon points="${loop.map(pt).join(' ')}" ${style}/>`);
 };

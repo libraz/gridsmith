@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { ChainInput, ChainSupport } from '../../src/geom/chain.js';
+import { buildChain } from '../../src/geom/chain.js';
 import type { Vec } from '../../src/geom/primitives.js';
 import { lineThrough, pointOnCircle } from '../../src/geom/primitives.js';
 import type { RegionNode } from '../../src/geom/region.js';
@@ -166,5 +168,94 @@ describe('boundsOfBoundedLeaves', () => {
 
   it('is null without bounded leaves', () => {
     expect(boundsOfBoundedLeaves(half(1))).toBeNull();
+  });
+});
+
+describe('chain leaf', () => {
+  const circle = (cx: number, cy: number, r: number): ChainSupport => ({
+    kind: 'circle',
+    circle: { cx, cy, r },
+  });
+  const piece = (support: ChainSupport, concave = false, corner?: Vec): ChainInput =>
+    corner === undefined ? { support, concave } : { support, concave, corner };
+  const chainLeaf = (input: ChainInput[]): { node: RegionNode; area: number } => {
+    const chain = buildChain(input);
+    return { node: { kind: 'chain', pieces: chain.pieces, source: src }, area: chain.area };
+  };
+
+  const lens = chainLeaf([
+    piece(circle(3, 0, 5), false, { x: 0, y: -5 }),
+    piece(circle(-3, 0, 5), false, { x: 0, y: 5 }),
+  ]);
+  const outer = chainLeaf([
+    piece(circle(-3, 0, 5), false, { x: 0, y: -5 }),
+    piece(circle(3, 0, 5), false, { x: 0, y: 5 }),
+  ]);
+  const stadium = chainLeaf([
+    piece({ kind: 'line', line: lineThrough({ x: 0, y: -2 }, { x: 1, y: -2 }) }),
+    piece(circle(2.5, 0, 2)),
+    piece({ kind: 'line', line: lineThrough({ x: 0, y: 2 }, { x: 1, y: 2 }) }),
+    piece(circle(-2.5, 0, 2)),
+  ]);
+  const fillet = chainLeaf([
+    piece(circle(-3, 0, 2)),
+    piece(circle(0, -4, 3), true),
+    piece(circle(3, 0, 2)),
+    piece(circle(0, 4, 3), true),
+  ]);
+
+  /** Area by counting cell centres of a 1024 x 1024 grid over the leaf's bounding box. */
+  const gridArea = (node: RegionNode): number => {
+    const box = boundsOfBoundedLeaves(node);
+    if (box === null) {
+      return 0;
+    }
+    const n = 1024;
+    const w = (box.maxX - box.minX) / n;
+    const h = (box.maxY - box.minY) / n;
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        if (contains(node, { x: box.minX + (i + 0.5) * w, y: box.minY + (j + 0.5) * h })) {
+          count++;
+        }
+      }
+    }
+    return count * w * h;
+  };
+
+  it.each([
+    ['lens', lens],
+    ['outer arcs', outer],
+    ['stadium', stadium],
+    ['lobes and fillets', fillet],
+  ] as const)('grid count of contains matches the chain area: %s', (_name, shape) => {
+    const grid = gridArea(shape.node);
+    expect(Math.abs(grid - shape.area)).toBeLessThanOrEqual(0.01 * shape.area);
+  });
+
+  it('points on the chord between joints are inside the lens', () => {
+    expect(contains(lens.node, { x: 0, y: 0 })).toBe(true);
+    expect(contains(lens.node, { x: 0, y: 2 })).toBe(true);
+    expect(contains(lens.node, { x: 0, y: -3.5 })).toBe(true);
+    expect(contains(lens.node, { x: 2.5, y: 0 })).toBe(false);
+    expect(contains(lens.node, { x: 0, y: 4.5 })).toBe(false);
+  });
+
+  it('a concave fillet centre is outside and a lobe centre inside', () => {
+    expect(contains(fillet.node, { x: 0, y: -4 })).toBe(false);
+    expect(contains(fillet.node, { x: -3, y: 0 })).toBe(true);
+    expect(contains(fillet.node, { x: 0, y: 0 })).toBe(true);
+  });
+
+  it('is bounded, with bounds from joints and the axis extremes of the arcs', () => {
+    expect(isBounded(lens.node)).toBe(true);
+    expect(boundsOfBoundedLeaves(lens.node)).toEqual({ minX: -2, minY: -4, maxX: 2, maxY: 4 });
+    expect(boundsOfBoundedLeaves(stadium.node)).toEqual({
+      minX: -4.5,
+      minY: -2,
+      maxX: 4.5,
+      maxY: 2,
+    });
   });
 });

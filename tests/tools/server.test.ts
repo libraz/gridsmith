@@ -119,7 +119,7 @@ describe('tools/list', () => {
         >,
       ).sort();
     expect(keys('gridsmith_guide')).toEqual(['topic']);
-    expect(keys('gridsmith_render')).toEqual(['spec', 'views']);
+    expect(keys('gridsmith_render')).toEqual(['spec', 'underlay', 'views']);
     expect(keys('gridsmith_export')).toEqual(['dir', 'name', 'overwrite', 'spec']);
     for (const tool of tools) {
       expect(tool.inputSchema.required ?? []).toEqual([]);
@@ -147,10 +147,10 @@ describe('gridsmith_guide', () => {
     }
   });
 
-  it('defaults to a cheat sheet of at most 6000 characters', async () => {
+  it('defaults to a cheat sheet of at most 8000 characters', async () => {
     const doc = jsonOf(await call('gridsmith_guide', {}));
     expect(doc.topic).toBe('overview');
-    expect(String(doc.text).length).toBeLessThanOrEqual(6000);
+    expect(String(doc.text).length).toBeLessThanOrEqual(8000);
   });
 
   it('derives the rules topic from the rule table', async () => {
@@ -479,6 +479,313 @@ describe('gridsmith_render svg and guides views', () => {
       'paint,strokes',
     ]);
     expect(sigil.stats[1]?.erases).toBe(8);
+  });
+});
+
+const WHALE = {
+  version: 1,
+  mode: 'mark',
+  grid: { divisions: 8 },
+  shapes: [
+    { id: 'head', type: 'circle', center: [-3.5, -1], r: 4 },
+    { id: 'bay_l', type: 'circle', center: [3, 2.5], r: 1.5 },
+    { id: 'bay_r', type: 'circle', center: [7, 2.5], r: 1.5 },
+    { id: 'belly', type: 'tangent_circle', r: 8, to: ['head', 'bay_r'], near: [-1, 3] },
+    { id: 'back', type: 'tangent_circle', r: 8, to: ['head', 'bay_l'], near: [-5, -5] },
+    { id: 'fluke_l', type: 'circle', center: [4, 3], r: 2 },
+    { id: 'fluke_r', type: 'circle', center: [6, 3], r: 2 },
+    { id: 'eye', type: 'circle', center: [-5, -2], r: 0.5 },
+    { id: 'jet_l', type: 'circle', center: [-5, 5], r: 1.5 },
+    { id: 'jet_l_cut', type: 'circle', center: [-5.5, 4.5], r: 1.5 },
+    { id: 'jet_r', type: 'circle', center: [-2, 5], r: 1.5 },
+    { id: 'jet_r_cut', type: 'circle', center: [-1.5, 4.5], r: 1.5 },
+    {
+      id: 'whale',
+      type: 'outline',
+      through: [
+        'belly',
+        { on: 'bay_r', concave: true, corner: [8.2, 3.5] },
+        { on: 'fluke_r', corner: [5, 4.7] },
+        { on: 'fluke_l', corner: [1.8, 3.5] },
+        { on: 'bay_l', concave: true },
+        'back',
+        'head',
+      ],
+    },
+  ],
+  paint: [
+    {
+      fill: {
+        union: [
+          { subtract: ['whale', 'eye'] },
+          { subtract: ['jet_l', 'jet_l_cut'] },
+          { subtract: ['jet_r', 'jet_r_cut'] },
+        ],
+      },
+    },
+  ],
+};
+
+describe('gridsmith_render underlay argument', () => {
+  type Match = {
+    iou: number;
+    missing: number;
+    excess: number;
+    offset: [number, number] | null;
+    grid: string[];
+    blobs: { kind: string; share: number; center: [number, number]; bbox: number[] }[];
+    underlay: Record<string, unknown>;
+  };
+  type Report = {
+    match?: Match;
+    stats: { bbox: { minX: number; minY: number; maxX: number; maxY: number } }[];
+  };
+
+  const movedHead = (): typeof WHALE => {
+    const spec = structuredClone(WHALE);
+    (spec.shapes[0] as { center: number[] }).center = [-4.5, -1];
+    return spec;
+  };
+
+  // Renders `spec`, saves its final PNG as the reference and returns the path and the fill's bounds.
+  const reference = async (spec: unknown, file = 'ref.png') => {
+    const result = await call('gridsmith_render', { spec, views: ['final'] });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const path = join(workDir, file);
+    await writeFile(path, imagesOf(result)[0]?.bytes ?? new Uint8Array());
+    const b = (jsonOf(result) as unknown as Report).stats[0]?.bbox;
+    return { path, box: [b?.minX, b?.minY, b?.maxX, b?.maxY] };
+  };
+
+  const countColour = (rgba: Uint8Array, [r, g, b]: number[]): number => {
+    let n = 0;
+    for (let i = 0; i < rgba.length; i += 4) {
+      if (rgba[i] === r && rgba[i + 1] === g && rgba[i + 2] === b) {
+        n++;
+      }
+    }
+    return n;
+  };
+
+  it('adds the match report with the documented fields', async () => {
+    const ref = await reference(WHALE);
+    const result = await call('gridsmith_render', {
+      spec: WHALE,
+      views: ['final'],
+      underlay: { path: ref.path, box: ref.box },
+    });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const report = jsonOf(result) as unknown as Report & Record<string, unknown>;
+    const match = report.match as Match;
+    expect(Object.keys(match).sort()).toEqual([
+      'blobs',
+      'excess',
+      'grid',
+      'iou',
+      'missing',
+      'offset',
+      'underlay',
+    ]);
+    expect(match.grid).toHaveLength(12);
+    for (const row of match.grid) {
+      expect(row).toMatch(/^[.+-]{12}$/);
+    }
+    expect(Object.keys(match.underlay).sort()).toEqual([
+      'box',
+      'inverted',
+      'placed',
+      'source',
+      'threshold',
+    ]);
+    expect(match.underlay).toMatchObject({ inverted: false, source: 'luminance' });
+    expect(match.underlay.box).toEqual(ref.box);
+    expect(report.truncated).toEqual([]);
+  });
+
+  it('omits match without an underlay', async () => {
+    const report = jsonOf(await call('gridsmith_render', { spec: WHALE, views: ['final'] }));
+    expect(Object.keys(report)).not.toContain('match');
+  });
+
+  it('matches the drawing of its own final image', async () => {
+    const ref = await reference(WHALE);
+    const result = await call('gridsmith_render', {
+      spec: WHALE,
+      views: ['final'],
+      underlay: { path: ref.path, box: ref.box },
+    });
+    const match = (jsonOf(result) as unknown as Report).match as Match;
+    expect(match.iou).toBeGreaterThanOrEqual(0.98);
+  });
+
+  it('scores a moved head lower and reports a blob near the head', async () => {
+    const ref = await reference(WHALE);
+    const underlay = { path: ref.path, box: ref.box };
+    const baseline = await call('gridsmith_render', { spec: WHALE, views: ['final'], underlay });
+    const same = (jsonOf(baseline) as unknown as Report).match as Match;
+    const result = await call('gridsmith_render', {
+      spec: movedHead(),
+      views: ['final'],
+      underlay,
+    });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const match = (jsonOf(result) as unknown as Report).match as Match;
+    expect(match.iou).toBeLessThan(same.iou);
+    expect(match.blobs.some((b) => b.center[0] < -2)).toBe(true);
+  });
+
+  it('draws the reference on the sheet and the sheet_svg', async () => {
+    const ref = await reference(WHALE);
+    const underlay = { path: ref.path, box: ref.box };
+    const withRef = await call('gridsmith_render', {
+      spec: movedHead(),
+      views: ['sheet', 'sheet_svg'],
+      underlay,
+    });
+    const without = await call('gridsmith_render', { spec: movedHead(), views: ['sheet'] });
+    const [sheet] = imagesOf(withRef);
+    const [plain] = imagesOf(without);
+    const a = readPng(sheet?.bytes ?? new Uint8Array());
+    const b = readPng(plain?.bytes ?? new Uint8Array());
+    expect([a.width, a.height]).toEqual([b.width, b.height]);
+    let changed = 0;
+    for (let i = 0; i < a.rgba.length; i += 4) {
+      if (
+        a.rgba[i] !== b.rgba[i] ||
+        a.rgba[i + 1] !== b.rgba[i + 1] ||
+        a.rgba[i + 2] !== b.rgba[i + 2]
+      ) {
+        changed++;
+      }
+    }
+    // The reference covers about a fifth of the drawing area.
+    expect(changed).toBeGreaterThan(50000);
+    expect(withRef.content.at(-1)?.text).toContain('<image');
+  });
+
+  it('returns the match view with the three colours', async () => {
+    const ref = await reference(WHALE);
+    const result = await call('gridsmith_render', {
+      spec: movedHead(),
+      views: ['match'],
+      underlay: { path: ref.path, box: ref.box },
+    });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const images = imagesOf(result);
+    expect(images).toHaveLength(1);
+    const png = readPng(images[0]?.bytes ?? new Uint8Array());
+    expect([png.width, png.height]).toEqual([512, 512]);
+    expect(countColour(png.rgba, [0x22, 0x22, 0x22])).toBeGreaterThan(100);
+    expect(countColour(png.rgba, [0xd9, 0x48, 0x0f])).toBeGreaterThan(100);
+    expect(countColour(png.rgba, [0x1c, 0x7e, 0xd6])).toBeGreaterThan(100);
+  });
+
+  it('keeps the default views when an underlay is given', async () => {
+    const ref = await reference(WHALE);
+    const result = await call('gridsmith_render', {
+      spec: WHALE,
+      underlay: { path: ref.path, box: ref.box },
+    });
+    expect(imagesOf(result)).toHaveLength(2);
+  });
+
+  it('rejects the match view without an underlay', async () => {
+    const result = await call('gridsmith_render', { spec: WHALE, views: ['match'] });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toMatch(/^gridsmith_render: views\[0\]/);
+    expect(textOf(result)).toContain('underlay');
+  });
+
+  it('rejects an underlay on gridsmith_export as an unknown key', async () => {
+    const ref = await reference(WHALE);
+    const dir = join(workDir, 'out');
+    const result = await call('gridsmith_export', {
+      spec: WHALE,
+      dir,
+      name: 'whale',
+      underlay: { path: ref.path },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('underlay');
+    expect(textOf(result)).toContain('unknown key');
+    await expect(stat(dir)).rejects.toThrow();
+  });
+
+  it('rejects an underlay that is a string, an array or null', async () => {
+    const ref = await reference(WHALE);
+    for (const underlay of [ref.path, [ref.path], null]) {
+      const result = await call('gridsmith_render', { spec: WHALE, underlay });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/^gridsmith_render: underlay/);
+    }
+  });
+
+  it('names the nested path and keys for an unknown key inside underlay', async () => {
+    const ref = await reference(WHALE);
+    const result = await call('gridsmith_render', {
+      spec: WHALE,
+      underlay: { path: ref.path, treshold: 100 },
+    });
+    expect(result.isError).toBe(true);
+    const text = textOf(result);
+    expect(text).toContain('gridsmith_render: underlay.treshold: unknown key');
+    expect(text).toContain('allowed: path, box, threshold, invert');
+    expect(text).toContain('Did you mean "threshold"?');
+    expect(text).not.toContain('spec, views');
+  });
+
+  it('rejects a relative path', async () => {
+    const result = await call('gridsmith_render', {
+      spec: WHALE,
+      underlay: { path: 'ref.png' },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('underlay.path');
+  });
+
+  it('accepts eight distinct views and rejects nine', async () => {
+    const ref = await reference(WHALE);
+    const underlay = { path: ref.path, box: ref.box };
+    const eight = ['sheet', 'final', 'sizes', 'svg', 'sheet_svg', 'guides', 'guides_svg', 'match'];
+    const ok = await call('gridsmith_render', { spec: WHALE, views: eight, underlay });
+    expect(ok.isError, textOf(ok)).toBeFalsy();
+    expect(ok.content).toHaveLength(9);
+    const nine = await call('gridsmith_render', {
+      spec: WHALE,
+      views: [...eight, 'sheet'],
+      underlay,
+    });
+    expect(nine.isError).toBe(true);
+    expect(textOf(nine)).toContain('views');
+  });
+
+  it('returns the spec error when the underlay is valid but the spec does not resolve', async () => {
+    const ref = await reference(WHALE);
+    const broken = {
+      version: 1,
+      mode: 'mark',
+      grid: { divisions: 4 },
+      shapes: [
+        { id: 'c', type: 'circle', center: [-3, 0], r: 0.5 },
+        { id: 'd', type: 'circle', center: [3, 0], r: 0.5 },
+        { id: 't', type: 'tangent_circle', r: 1, to: ['c', 'd'], near: [0, 0] },
+      ],
+      paint: [{ fill: 't' }],
+    };
+    const result = await call('gridsmith_render', { spec: broken, underlay: { path: ref.path } });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('spec.shapes[2] (id "t")');
+    expect(textOf(result)).not.toContain('underlay');
+  });
+
+  it('checks the underlay file before it loads the spec', async () => {
+    const result = await call('gridsmith_render', {
+      spec: join(workDir, 'missing.json'),
+      underlay: { path: join(workDir, 'missing.png') },
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('underlay.path');
+    expect(textOf(result)).not.toContain('spec');
   });
 });
 

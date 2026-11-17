@@ -8,6 +8,7 @@ import { specSchema } from '../../src/spec/schema.js';
 type Extras = {
   violations?: { rule: string; target: string; message: string }[];
   exceptionsApplied?: { rule: string; target: string; reason: string }[];
+  underlay?: { href: string };
 };
 
 const guidesOf = (input: unknown): string => {
@@ -37,6 +38,7 @@ const sheetOf = (input: unknown, extras: Extras = {}) => {
       fills,
       violations: extras.violations ?? [],
       exceptionsApplied: extras.exceptionsApplied ?? [],
+      ...(extras.underlay === undefined ? {} : { underlay: extras.underlay }),
     }),
   };
 };
@@ -442,5 +444,146 @@ describe('sheet drawing area', () => {
       '<clipPath id="drawing-area"><rect x="0" y="0" width="1000" height="1000"/>',
     );
     expect(svg.indexOf('data-id="wide"')).toBeGreaterThan(clip);
+  });
+});
+
+const whaleInput = {
+  version: 1,
+  mode: 'mark',
+  grid: { divisions: 8 },
+  shapes: [
+    { id: 'head', type: 'circle', center: [-5, -1], r: 3 },
+    { id: 'belly', type: 'circle', center: [-1, 4], r: 9 },
+    { id: 'bay_l', type: 'circle', center: [1, 2], r: 2 },
+    { id: 'bay_r', type: 'circle', center: [7, 2], r: 2 },
+    { id: 'rump', type: 'tangent_circle', r: 2, to: ['belly', 'bay_r'], near: [3.5, -0.5] },
+    { id: 'back', type: 'tangent_circle', r: 7, to: ['head', 'bay_l'], near: [-3.3, -4.6] },
+    { id: 'fluke_l', type: 'circle', center: [2.5, 2.5], r: 3 },
+    { id: 'fluke_r', type: 'circle', center: [5.5, 2.5], r: 3 },
+    { id: 'eye', type: 'circle', center: [-5.5, 0], r: 0.5 },
+    {
+      id: 'whale',
+      type: 'outline',
+      through: [
+        'belly',
+        'rump',
+        { on: 'bay_r', concave: true, corner: [8, 3.6] },
+        { on: 'fluke_r', corner: [4.3, 5.2] },
+        { on: 'fluke_l', corner: [0, 3.6] },
+        { on: 'bay_l', concave: true },
+        'back',
+        { on: 'head', corner: [-7.5, -3] },
+      ],
+    },
+  ],
+  paint: [{ fill: { subtract: ['whale', 'eye'] } }],
+};
+
+const lensRepeatInput = {
+  version: 1,
+  mode: 'mark',
+  grid: { divisions: 4 },
+  shapes: [
+    { id: 'a', type: 'circle', center: [2.5, 0], r: 1.5 },
+    { id: 'b', type: 'circle', center: [3.5, 0], r: 1.5 },
+    {
+      id: 'lens',
+      type: 'outline',
+      through: [
+        { on: 'a', corner: [3, 1.4] },
+        { on: 'b', corner: [3, -1.4] },
+      ],
+    },
+    { id: 'ring', type: 'repeat', of: ['lens'], n: 3 },
+  ],
+  paint: [{ fill: 'ring' }],
+};
+
+const groupOf = (svg: string, id: string): string =>
+  svg.match(new RegExp(`<g data-id="${id}"[^>]*>(.*?)</g>`, 's'))?.[1] ?? '';
+const strokeOf = (el: string, attr: 'stroke' | 'stroke-width'): string | undefined =>
+  el.match(new RegExp(` ${attr}="([^"]*)"`))?.[1];
+
+describe('construction sheet outline element', () => {
+  it('has one data-id group per outline holding its path and one marker per joint', () => {
+    const { svg } = sheetOf(whaleInput);
+    expect(dataIds(svg).filter((id) => id === 'whale')).toHaveLength(1);
+    const group = groupOf(svg, 'whale');
+    expect(group.match(/<path /g)).toHaveLength(1);
+    // 8 pieces, 4 corners: four square markers and four round ones.
+    expect(group.match(/<rect /g)).toHaveLength(4);
+    expect(group.match(/<circle /g)).toHaveLength(4);
+  });
+
+  it('draws the outline in the construction colour, heavier than a plain circle', () => {
+    const { svg } = sheetOf(whaleInput);
+    const path = groupOf(svg, 'whale').match(/<path [^>]*>/)?.[0] ?? '';
+    const circle = groupOf(svg, 'head').match(/<circle [^>]*>/)?.[0] ?? '';
+    expect(strokeOf(path, 'stroke')).toBe(strokeOf(circle, 'stroke'));
+    expect(Number(strokeOf(path, 'stroke-width'))).toBeGreaterThan(
+      Number(strokeOf(circle, 'stroke-width')),
+    );
+    expect(path).toContain('fill="none"');
+  });
+
+  it('writes the outline legend line', () => {
+    const { svg } = sheetOf(whaleInput);
+    expect(panelLines(svg)).toContain('whale  outline  8 pieces, 4 corners');
+  });
+
+  it('draws only the paths of the copies of a repeated outline', () => {
+    const { svg } = sheetOf(lensRepeatInput);
+    const group = svg.match(/<g data-id="ring" data-kind="repeat">(.*?)<\/g>/s)?.[1] ?? '';
+    expect(group.match(/<path /g)).toHaveLength(2);
+    expect(group).not.toMatch(/<rect |<circle /);
+    expect(dataIds(svg).filter((id) => id === 'ring')).toHaveLength(1);
+  });
+
+  it('draws the outline construction elements in the guides view too', () => {
+    const guides = guidesOf(whaleInput);
+    const group = groupOf(guides, 'whale');
+    expect(group.match(/<path /g)).toHaveLength(1);
+    expect(group.match(/<rect /g)).toHaveLength(4);
+    expect(group.match(/<circle /g)).toHaveLength(4);
+  });
+});
+
+describe('construction sheet underlay image', () => {
+  const href = 'data:image/png;base64,iVBORw0KGgo=';
+  const gridEnd = (svg: string): number =>
+    Math.max(svg.lastIndexOf('stroke="#d9d2bf"'), svg.lastIndexOf('stroke="#b9b09a"'));
+
+  it('covers the whole canvas inside the clipped drawing group', () => {
+    const { svg } = sheetOf(markInput, { underlay: { href } });
+    expect(svg.match(/<image /g)).toHaveLength(1);
+    const image = svg.match(/<image [^>]*>/)?.[0] ?? '';
+    expect(image).toContain('x="0" y="0" width="1000" height="1000"');
+    expect(image).toContain('preserveAspectRatio="none"');
+    expect(image).toContain(`href="${href}"`);
+    expect(svg.indexOf('<g clip-path="url(#drawing-area)">')).toBeLessThan(svg.indexOf('<image '));
+  });
+
+  it('comes after the grid and before the tint of the final drawing', () => {
+    const { svg } = sheetOf(markInput, { underlay: { href } });
+    const at = svg.indexOf('<image ');
+    expect(at).toBeGreaterThan(gridEnd(svg));
+    expect(at).toBeLessThan(svg.indexOf('fill-opacity="0.15"'));
+    expect(at).toBeLessThan(svg.indexOf('data-id='));
+  });
+
+  it('comes before the tint of a figure too', () => {
+    const { svg } = sheetOf(figureInput, { underlay: { href } });
+    const at = svg.indexOf('<image ');
+    expect(at).toBeGreaterThan(gridEnd(svg));
+    expect(at).toBeLessThan(svg.indexOf('<g opacity="0.25">'));
+  });
+
+  it('is absent without an underlay', () => {
+    expect(sheetOf(markInput).svg).not.toContain('<image');
+    expect(sheetOf(figureInput).svg).not.toContain('<image');
+  });
+
+  it('is absent from the guides view', () => {
+    expect(guidesOf(markInput)).not.toContain('<image');
   });
 });

@@ -36,12 +36,12 @@ COORDINATES
 - A length is a number (0.05 to 64 modules) or an expression: R or <circle id>.r, followed by * or / with 2 to 16, sqrt2, sqrt3, phi or phi2 (phi squared). Examples: "R/2", "outer.r*sqrt3/2". No spaces, parentheses, + or -.
 
 MODES (one per spec)
-- mark: filled shapes only. paint = [{ fill: Region, color? }]. A Region is an id (disc, polygon, points, repeat of those), { half, toward }, or { union | intersect | subtract: [Region, ...] }. At most 8 circles. Keep it legible at 64, 32 and 16 px.
+- mark: filled shapes only. paint = [{ fill: Region, color? }]. A Region is an id (disc, polygon, points, outline, repeat of those), { half, toward }, or { union | intersect | subtract: [Region, ...] }. At most 8 circles (40 when a painted outline exists). Keep it legible at 64, 32 and 16 px.
 - figure: line drawing only. paint = [{ stroke: [ids], width, color? }, { erase: [ids] }]. Circles draw as circumferences, lines as segments, arcs as partial circumferences, polygons as outlines, a repeat as every copy. At most 16 circles; arcs do not count. Helper circles that nothing strokes are fine when a stroked shape refers to them.
 - erase layer (figure only, never first): hides every earlier layer inside the listed circles, polygons or points (or repeats of those), leaving the background transparent. Later layers draw on top. Use it for medallions that cut the bands behind them.
 
 ELEMENTS (shapes[]; ids are lowercase, unique, not "spec")
-point, circle, tangent_circle, line, arc, polygon, points, repeat. Topic "spec" has the exact schema.
+point, circle, tangent_circle, line, arc, polygon, points, outline, repeat. Topic "spec" has the exact schema.
 
 REFERENCES
 - An element may refer only to elements declared earlier in shapes.
@@ -53,12 +53,31 @@ REFERENCES
 - arc { on: circle id, from, to } runs counter-clockwise from from to to along the circle. Each end is degrees or a point on the circle, typically { intersect: [circle, other], near }: an arc between two intersection points. Stroke it or repeat it; it cannot be a region or a reference base.
 - polygon { in: circle id, n, step?, rotate? } inscribes a regular n-gon; step 2 or more draws a star ({6/2} is a hexagram).
 
+OUTLINES (silhouettes from arcs)
+outline { through: [piece, ...] } is one closed edge cut from circles declared earlier (2 to 64 pieces). A piece is an id or { on: id, concave?, corner? }; on is a circle, tangent_circle or line. List the pieces counter-clockwise (inside on the left); clockwise is a resolve error. A circle piece bulges outward; concave: true carves inward. Each piece ends where it meets the next one, the last meeting the first:
+- Tangent circles join at their touching point; no corner.
+- Circles that cross meet in two points: put corner on the first piece of the joint, a point nearer the wanted crossing. Two lines meet in one point; no corner. Pieces that do not touch are an error.
+- For a smooth edge make the next circle with tangent_circle. An externally tangent neighbour swaps bulge and carve: flip its concave.
+An outline works wherever points does: mark fill, figure stroke or erase, repeat of.
+
+OUTLINE PITFALLS
+- Pick a tangent_circle candidate with near; check the chosen contact kind in geometry contacts.
+- corner steers the joint between its piece and the next. A hint near the wrong crossing is no error but another shape: check the sign of turn (geometry corners [x, y, turn], positive = bends left) and the area.
+- A piece between two corners has no concave check; the wrong choice draws the complementary arc. Look at the picture.
+- Grid circles that happen to touch exactly make the joint a tangent point, not a corner.
+
+MATCHING A REFERENCE IMAGE
+Pass underlay { path, box?, threshold?, invert? } to gridsmith_render. path: absolute PNG or JPEG; box [x0, y0, x1, y1] in modules receives the shape's bounding box (default the grid square). The sheet shows the reference in orange. report.match: iou (1 = same), missing and excess (shares), offset (drawing centre minus reference centre), grid (12 rows, top first: - missing, + excess, . fine), up to 3 blobs (kind, share of the reference area, center, bbox). Fix the largest blob or grid region, then render again. views ["match"]: both dark, reference only orange, drawing only blue.
+- Every opaque pixel counts as ink: cut holes with subtract, never white paint.
+- A figure is compared as a line drawing: use a line reference; a filled silhouette gives a low iou.
+- Specks, frames and text in the margin shift the bounding box: crop the image or set box. match.underlay shows the placement, threshold and polarity used; set threshold or invert if the wrong side was taken as the shape.
+
 RULES (topic "rules" has the table)
 At most 3 distinct ratios; numeric radii and coordinates on a 0.5 grid (mark) or 0.25 grid (figure); degree angles that are multiples of 180/n for n in 2, 3, 4, 5, 6, 8, 10, 12, 20, 24; polygon.n and repeat.n from that same set; everything inside the canvas; no unused shapes. Violations do not stop gridsmith_render, but gridsmith_export refuses until each is fixed or excused by an exceptions entry { rule, target, reason }.
 
 WORKFLOW
 1. Write the spec to a JSON file with an absolute path, e.g. /tmp/work/mark.json.
-2. Call gridsmith_render with spec set to that path. Read geometry (resolved centres, radii, tangent points), violations and hints in the JSON, and look at the images. A mark returns the sheet and 64/32/16 px sizes; a figure returns the sheet and the final drawing. Other views: guides (final drawing with every construction element over it), and svg, sheet_svg, guides_svg (SVG markup as text).
+2. Call gridsmith_render with spec set to that path. Read geometry (resolved centres, radii, tangent points), violations and hints in the JSON, and look at the images. A mark returns the sheet and 64/32/16 px sizes; a figure returns the sheet and the final drawing. Other views: guides (final drawing with every construction element over it), match (with underlay), and svg, sheet_svg, guides_svg (SVG markup as text).
 3. Edit the file and render again. Resolve errors list every failing element at once, root causes first.
 4. When violations is empty (exportable is true), call gridsmith_export with dir (absolute), name and the same spec path. Existing files are never replaced unless overwrite is true.
 An inline spec object also works; a path avoids resending it.`;

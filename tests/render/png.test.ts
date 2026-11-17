@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
-import { encodeRgbPng, renderExportPng, renderPreviewPng } from '../../src/render/png.js';
+import type { Mask } from '../../src/render/match.js';
+import {
+  decodeImage,
+  encodeRgbaPng,
+  encodeRgbPng,
+  inkMask,
+  renderExportPng,
+  renderMatchPng,
+  renderPreviewPng,
+  underlayHref,
+} from '../../src/render/png.js';
 import { renderGuidesSvg, renderSheetSvg } from '../../src/render/sheet.js';
 import { renderFinalSvg } from '../../src/render/svg.js';
 import { resolveSpec } from '../../src/resolve/resolve.js';
@@ -289,5 +299,100 @@ describe('erase layers in rasters', () => {
     const img = readPng(renderPreviewPng('guides', svgsOf(erased)).png);
     expect(inkAt(img, ...module(0, 3.08))).toBe(true);
     expect(inkAt(img, ...module(2.7, 0.7))).toBe(false);
+  });
+});
+
+describe('decodeImage', () => {
+  const solid = (w: number, h: number, px: number[]) => {
+    const rgba = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      rgba.set(px, i * 4);
+    }
+    return encodeRgbaPng(w, h, rgba);
+  };
+
+  it('returns premultiplied pixels that composite onto white at the straight-alpha luminance', () => {
+    const img = decodeImage(solid(1, 1, [255, 0, 0, 128]), 'image/png', 1, 1);
+    expect([img.width, img.height]).toEqual([1, 1]);
+    const [r = 0, g = 0, b = 0, a = 0] = img.rgba;
+    expect(Math.abs(r - 128)).toBeLessThanOrEqual(1);
+    expect(g).toBe(0);
+    expect(b).toBe(0);
+    expect(a).toBe(128);
+    const lum = ([x = 0, y = 0, z = 0]: number[]) => Math.round(0.299 * x + 0.587 * y + 0.114 * z);
+    const composited = [r, g, b].map((c) => Math.min(255, c + (255 - a)));
+    // Straight red at 128/255 over white: (255, 127, 127).
+    const expected = lum([255, 255 - 128, 255 - 128]);
+    expect(Math.abs(lum(composited) - expected)).toBeLessThanOrEqual(1);
+  });
+
+  it('scales a non-square image down to a 512 px long side with integer sizes', () => {
+    const img = decodeImage(solid(1000, 500, [255, 0, 0, 255]), 'image/png', 1000, 500);
+    expect([img.width, img.height]).toEqual([512, 256]);
+    expect(img.rgba).toHaveLength(512 * 256 * 4);
+    const mid = (128 * 512 + 256) * 4;
+    expect([...img.rgba.subarray(mid, mid + 4)]).toEqual([255, 0, 0, 255]);
+  });
+
+  it('rounds the short side and never goes below 1 px', () => {
+    const tall = decodeImage(solid(3, 1001, [0, 0, 0, 255]), 'image/png', 3, 1001);
+    expect([tall.width, tall.height]).toEqual([2, 512]);
+    const thin = decodeImage(solid(1, 4000, [0, 0, 0, 255]), 'image/png', 1, 4000);
+    expect([thin.width, thin.height]).toEqual([1, 512]);
+  });
+
+  it('never upscales a small image', () => {
+    const img = decodeImage(solid(10, 4, [0, 0, 255, 255]), 'image/png', 10, 4);
+    expect([img.width, img.height]).toEqual([10, 4]);
+  });
+
+  it('builds an ink mask from alpha, ignoring colour', () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-9 -9 18 18">' +
+      '<circle cx="0" cy="-5" r="3" fill="#ffffff"/></svg>';
+    const mask = inkMask(svg);
+    expect(mask.size).toBe(256);
+    const at = (x: number, y: number) =>
+      mask.data[Math.round(((9 - y) / 18) * 256) * 256 + Math.round(((x + 9) / 18) * 256)];
+    // SVG y is down: cy = -5 is the upper part of the image.
+    expect(at(0, 5)).toBe(1);
+    expect(at(0, -5)).toBe(0);
+    expect(at(8, 8)).toBe(0);
+  });
+
+  it('returns a PNG data URI for the underlay, tinted where the reference is', () => {
+    const data = new Uint8Array(256 * 256);
+    data[10 * 256 + 20] = 1;
+    const href = underlayHref({ size: 256, data });
+    expect(href.startsWith('data:image/png;base64,')).toBe(true);
+    const img = readPng(Buffer.from(href.slice('data:image/png;base64,'.length), 'base64'));
+    expect([img.width, img.height]).toEqual([256, 256]);
+    const px = (x: number, y: number) => [
+      ...img.rgba.subarray((y * 256 + x) * 4, (y * 256 + x) * 4 + 4),
+    ];
+    expect(px(20, 10)).toEqual([0xd9, 0x48, 0x0f, 77]);
+    expect(px(21, 10)[3]).toBe(0);
+  });
+
+  it('draws the match view with one colour per overlap class on white', () => {
+    const mk = (cells: number[]): Mask => {
+      const data = new Uint8Array(256 * 256);
+      for (const c of cells) {
+        data[c] = 1;
+      }
+      return { size: 256, data };
+    };
+    const at = (i: number, j: number) => j * 256 + i;
+    const ref = mk([at(10, 10), at(11, 10)]);
+    const ink = mk([at(11, 10), at(12, 10)]);
+    const img = readPng(renderMatchPng(ref, ink));
+    expect([img.width, img.height]).toEqual([512, 512]);
+    const px = (i: number, j: number) => [
+      ...img.rgba.subarray((2 * j * 512 + 2 * i) * 4, (2 * j * 512 + 2 * i) * 4 + 4),
+    ];
+    expect(px(10, 10)).toEqual([0xd9, 0x48, 0x0f, 255]);
+    expect(px(11, 10)).toEqual([0x22, 0x22, 0x22, 255]);
+    expect(px(12, 10)).toEqual([0x1c, 0x7e, 0xd6, 255]);
+    expect(px(13, 10)).toEqual([255, 255, 255, 255]);
   });
 });

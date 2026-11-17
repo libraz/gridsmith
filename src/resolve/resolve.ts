@@ -1,3 +1,5 @@
+import type { ChainInput, ChainJoint, ChainPiece } from '../geom/chain.js';
+import { buildChain, ChainError, sameChain, transformChain } from '../geom/chain.js';
 import {
   intersectCircleCircle,
   intersectCircleLine,
@@ -64,13 +66,23 @@ export type ArcGeometry = {
 };
 export type ResolvedArc = { type: 'arc'; id: string } & ArcGeometry;
 
+/** A closed outline: pieces run counter-clockwise, `joints[k]` joins `pieces[k]` to the next piece. */
+export type ResolvedOutline = {
+  type: 'outline';
+  id: string;
+  pieces: ChainPiece[];
+  joints: ChainJoint[];
+  area: number;
+};
+
 /** A repeated element: a tangent circle is copied as a plain circle. */
 export type RepeatElement =
   | ResolvedCircle
   | ResolvedLine
   | ResolvedArc
   | ResolvedPolygon
-  | ResolvedPoints;
+  | ResolvedPoints
+  | ResolvedOutline;
 
 /** Copy 0 is the original, which is not listed; generated copies are numbered from 1 per `of` element across all repeats. */
 export type RepeatCopy = { of: string; copy: number; element: RepeatElement };
@@ -92,6 +104,7 @@ export type ResolvedElement =
   | ResolvedArc
   | ResolvedPolygon
   | ResolvedPoints
+  | ResolvedOutline
   | ResolvedRepeat;
 
 export type ResolvedFill = { index: number; color: string; region: RegionNode };
@@ -100,10 +113,14 @@ export type StrokeGeometry =
   | { kind: 'circle'; circle: Circle }
   | { kind: 'segment'; from: Vec; to: Vec }
   | ({ kind: 'arc' } & ArcGeometry)
-  | { kind: 'polygon'; loops: Vec[][] };
+  | { kind: 'polygon'; loops: Vec[][] }
+  | { kind: 'chain'; pieces: ChainPiece[] };
 
 /** A closed shape an erase layer hides the earlier layers inside of. */
-export type EraseShape = { kind: 'circle'; circle: Circle } | { kind: 'polygon'; loops: Vec[][] };
+export type EraseShape =
+  | { kind: 'circle'; circle: Circle }
+  | { kind: 'polygon'; loops: Vec[][] }
+  | { kind: 'chain'; pieces: ChainPiece[] };
 
 export type ResolvedErase = { index: number; shapes: EraseShape[] };
 
@@ -152,7 +169,8 @@ type Drawable =
   | ResolvedLine
   | ResolvedArc
   | ResolvedPolygon
-  | ResolvedPoints;
+  | ResolvedPoints
+  | ResolvedOutline;
 type Placement = { el: Drawable; copy: number };
 type Curve = { kind: 'circle'; circle: Circle } | { kind: 'line'; line: Line };
 
@@ -242,10 +260,13 @@ const sameGeometry = (a: RepeatElement, b: RepeatElement): boolean => {
   if ((a.type === 'polygon' || a.type === 'points') && a.type === b.type) {
     return sameVertices(a.vertices, b.vertices);
   }
+  if (a.type === 'outline' && b.type === 'outline') {
+    return sameChain(a, b);
+  }
   return false;
 };
 
-const mapElement = (el: RepeatElement, f: (p: Vec) => Vec): RepeatElement => {
+const mapElement = (el: RepeatElement, f: (p: Vec) => Vec, mirrored: boolean): RepeatElement => {
   switch (el.type) {
     case 'circle': {
       const c = f(centerOf(el.circle));
@@ -271,6 +292,66 @@ const mapElement = (el: RepeatElement, f: (p: Vec) => Vec): RepeatElement => {
       return { ...el, loops: el.loops.map((l) => l.map(f)), vertices: el.vertices.map(f) };
     case 'points':
       return { ...el, loops: [el.loops[0].map(f)], vertices: el.vertices.map(f) };
+    case 'outline':
+      return { ...el, ...transformChain(el, f, mirrored) };
+  }
+};
+
+const fixed3 = (x: number): string => {
+  const s = x.toFixed(3);
+  return Number(s) === 0 ? '0.000' : s;
+};
+const point3 = (p: Vec): string => `(${fixed3(p.x)}, ${fixed3(p.y)})`;
+
+// Message for the first problem of an outline; `idAt` names the piece at a `through` index.
+const outlineFailure = (error: ChainError, idAt: (k: number) => string): string => {
+  const [i = 0, j = 0] = error.pieces;
+  const a = `"${idAt(i)}"`;
+  const b = `"${idAt(j)}"`;
+  const at = (k: number): string => `through[${k}]`;
+  const pair = `${at(i)} ${a} and ${at(j)} ${b}`;
+  const points = error.points.map(point3).join(' and ');
+  switch (error.code) {
+    case 'same_curve':
+      return `outline pieces are the same curve (received: ${pair}; allowed: neighbouring pieces on different curves). Remove one of them or put a different curve between.`;
+    case 'no_contact': {
+      const how =
+        error.contact === 'parallel'
+          ? 'parallel lines'
+          : error.contact === 'line'
+            ? `circle and line ${fmt(error.amount ?? 0)} apart`
+            : error.contact === 'internal'
+              ? `one circle inside the other with a gap of ${fmt(error.amount ?? 0)}`
+              : `circles apart by ${fmt(error.amount ?? 0)}`;
+      return `outline pieces do not touch (received: ${pair}, ${how}; allowed: curves that touch or cross). Move or resize a curve until they touch or cross.`;
+    }
+    case 'corner_required':
+      return `outline joint needs a corner (received: ${pair} cross at ${points}; allowed: a corner on ${at(i)}). Add corner to ${at(i)} to make a corner, or make the joint smooth with a tangent_circle that touches both.`;
+    case 'corner_not_needed':
+      return `outline joint has no choice to make (received: corner on ${at(i)} between ${a} and ${b}, which meet at ${points}; allowed: no corner). The joint is a single point, so remove corner.`;
+    case 'corner_tie':
+      return `outline corner is undecidable (received: corner on ${at(i)} is equally close to the crossings ${points} of ${a} and ${b}; allowed: a corner whose nearest crossing leads by more than ${TIE}). Move corner toward the wanted crossing.`;
+    case 'zero_length':
+      return `outline piece has no length (received: ${at(i)} ${a} starts and ends at ${points}; allowed: entry and exit more than ${TIE} apart). Change the neighbouring curves so the joints differ.`;
+    case 'direction_mismatch': {
+      const fix =
+        error.contact === 'external'
+          ? `An external tangency swaps convex and concave; change concave on ${a} or ${b}.`
+          : error.contact === 'internal'
+            ? `An internal tangency keeps convex and concave; make concave the same on ${a} and ${b}.`
+            : `Change concave on the circle piece (${a} or ${b}).`;
+      const kind =
+        error.contact === 'external'
+          ? 'externally tangent circles'
+          : error.contact === 'internal'
+            ? 'internally tangent circles'
+            : 'a circle and a line touching';
+      return `outline runs backwards at a tangent point (received: ${pair}, ${kind} at ${points}; allowed: both pieces travelling the same way). ${fix}`;
+    }
+    case 'self_intersection':
+      return `outline pieces touch or cross (received: ${pair} at ${points}; allowed: non-neighbouring pieces apart). A through list in clockwise order shows up as a self-intersection; reorder it counter-clockwise.`;
+    case 'clockwise':
+      return `outline runs clockwise (received: signed area ${fmt(error.amount ?? 0)}; allowed: a positive area). Reorder through counter-clockwise.`;
   }
 };
 
@@ -583,6 +664,33 @@ export function resolveSpec(spec: Spec): ResolveResult {
     return { type: 'points', id: shape.id, loops: [vertices], vertices };
   };
 
+  const resolveOutline = (shape: Extract<Shape, { type: 'outline' }>): ResolvedOutline => {
+    const idAt = (k: number): string => {
+      const piece = shape.through[k];
+      return typeof piece === 'string' ? piece : (piece?.on ?? '');
+    };
+    const input: ChainInput[] = shape.through.map((piece) => {
+      const on = typeof piece === 'string' ? piece : piece.on;
+      const curve = curveOf(on);
+      const concave = typeof piece === 'string' ? false : (piece.concave ?? false);
+      const corner = typeof piece === 'string' ? undefined : piece.corner;
+      return {
+        support: curve,
+        concave,
+        ...(corner === undefined ? {} : { corner: evalPoint(corner) }),
+      };
+    });
+    try {
+      const chain = buildChain(input);
+      return { type: 'outline', id: shape.id, ...chain };
+    } catch (error) {
+      if (!(error instanceof ChainError)) {
+        throw error;
+      }
+      throw new Failure(outlineFailure(error, idAt));
+    }
+  };
+
   const resolveRepeat = (shape: Extract<Shape, { type: 'repeat' }>): ResolvedRepeat => {
     const center = located(shape.center, 'center');
     const originals = shape.of.map((id): RepeatElement => {
@@ -595,22 +703,24 @@ export function resolveSpec(spec: Spec): ResolveResult {
         case 'arc':
         case 'polygon':
         case 'points':
+        case 'outline':
           return el;
         default:
           throw new Failure(
-            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, arc, polygon or points)`,
+            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, arc, polygon, points or outline)`,
           );
       }
     });
-    const placements: ((v: Vec) => Vec)[] = [];
+    const placements: { map: (v: Vec) => Vec; mirrored: boolean }[] = [];
     for (let k = 1; k < shape.n; k++) {
-      placements.push((v) => rotateAbout(v, center, (360 * k) / shape.n));
+      placements.push({ map: (v) => rotateAbout(v, center, (360 * k) / shape.n), mirrored: false });
     }
     if (shape.mirror) {
       for (let k = 0; k < shape.n; k++) {
-        placements.push((v) =>
-          rotateAbout(mirrorAcross(v, center, shape.axis), center, (360 * k) / shape.n),
-        );
+        placements.push({
+          map: (v) => rotateAbout(mirrorAcross(v, center, shape.axis), center, (360 * k) / shape.n),
+          mirrored: true,
+        });
       }
     }
     const copies: RepeatCopy[] = [];
@@ -618,7 +728,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
     for (const original of originals) {
       const kept: RepeatElement[] = [original];
       placements.forEach((place, p) => {
-        const element = mapElement(original, place);
+        const element = mapElement(original, place.map, place.mirrored);
         if (kept.some((k) => sameGeometry(k, element))) {
           return;
         }
@@ -707,6 +817,8 @@ export function resolveSpec(spec: Spec): ResolveResult {
         return resolvePolygon(shape);
       case 'points':
         return resolvePoints(shape);
+      case 'outline':
+        return resolveOutline(shape);
       case 'repeat':
         return resolveRepeat(shape);
     }
@@ -756,6 +868,8 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'polygon':
       case 'points':
         return { kind: 'poly', loops: el.loops, source };
+      case 'outline':
+        return { kind: 'chain', pieces: el.pieces, source };
       case 'line':
       case 'arc':
         return null;
@@ -785,6 +899,8 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'polygon':
       case 'points':
         return { id: el.id, copy, via, kind: 'polygon', loops: el.loops };
+      case 'outline':
+        return { id: el.id, copy, via, kind: 'chain', pieces: el.pieces };
     }
   };
 
@@ -796,10 +912,12 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'polygon':
       case 'points':
         return { kind: 'polygon', loops: el.loops };
+      case 'outline':
+        return { kind: 'chain', pieces: el.pieces };
       case 'line':
       case 'arc':
         throw new Failure(
-          `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points or repeat of those)`,
+          `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points, outline or repeat of those)`,
         );
     }
   };
@@ -815,7 +933,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
       }
       if (leaves.length === 0) {
         throw new Failure(
-          `region has no area (received: "${region}"; allowed: a circle, polygon, points or repeat of those)`,
+          `region has no area (received: "${region}"; allowed: a circle, polygon, points, outline or repeat of those)`,
         );
       }
       return { kind: 'union', children: leaves };

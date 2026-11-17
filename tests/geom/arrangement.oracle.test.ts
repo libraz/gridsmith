@@ -1,6 +1,8 @@
 import paper from 'paper';
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
+import type { ChainInput, ChainPiece, ChainSupport } from '../../src/geom/chain.js';
+import { buildChain } from '../../src/geom/chain.js';
 import type { Line, Vec } from '../../src/geom/primitives.js';
 import {
   add,
@@ -16,7 +18,7 @@ import { boundsOfBoundedLeaves, contains, isBounded } from '../../src/geom/regio
 
 paper.setup(new paper.Size(1, 1));
 
-type Leaf = Extract<RegionNode, { source: Source }>;
+type Leaf = Extract<RegionNode, { kind: 'disc' | 'half' | 'poly' }>;
 type Op = 'union' | 'intersect' | 'subtract';
 type Shape = 'leaf' | { op: Op; children: Shape[] };
 type Case = { tree: RegionNode; tangent: boolean; coincident: boolean; radii: number[] };
@@ -329,6 +331,8 @@ function toPaper(node: RegionNode): paper.PathItem {
         closed: true,
         insert: false,
       });
+    case 'chain':
+      return paperChain(node.pieces);
     default: {
       const [first, ...rest] = node.children.map(toPaper);
       if (first === undefined) {
@@ -345,6 +349,40 @@ function toPaper(node: RegionNode): paper.PathItem {
       }, first);
     }
   }
+}
+
+/** Chain as one closed path; arcs as cubic Beziers of at most 22.5 degrees, like `paperCircle`. */
+function paperChain(pieces: readonly ChainPiece[]): paper.Path {
+  const segments: paper.Segment[] = [];
+  // Handle pointing into the joint that ends the previous piece.
+  let handleIn = new paper.Point(0, 0);
+  for (const piece of pieces) {
+    if (piece.kind === 'line') {
+      segments.push(new paper.Segment(P(piece.start), handleIn, new paper.Point(0, 0)));
+      handleIn = new paper.Point(0, 0);
+      continue;
+    }
+    const { cx, cy, r } = piece.circle;
+    const sign = piece.ccw ? 1 : -1;
+    const parts = Math.ceil(piece.sweep / (Math.PI / 8));
+    const step = piece.sweep / parts;
+    const k = (4 / 3) * Math.tan(step / 4) * r;
+    const tangent = (a: number): paper.Point =>
+      new paper.Point(-Math.sin(a) * k * sign, Math.cos(a) * k * sign);
+    for (let i = 0; i < parts; i++) {
+      const a = piece.from + sign * i * step;
+      const at = i === 0 ? piece.start : { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+      segments.push(
+        new paper.Segment(P(at), i === 0 ? handleIn : tangent(a).multiply(-1), tangent(a)),
+      );
+    }
+    handleIn = tangent(piece.from + sign * piece.sweep).multiply(-1);
+  }
+  const first = segments[0];
+  if (first !== undefined) {
+    first.handleIn = handleIn;
+  }
+  return new paper.Path({ segments, closed: true, insert: false });
 }
 
 function paperArea(item: paper.PathItem): number {
@@ -416,4 +454,130 @@ describe('arrange against paper.js', () => {
     expect(cases.filter((c) => c.tangent).length).toBeGreaterThanOrEqual(0.25 * CASES);
     expect(cases.filter((c) => c.coincident).length).toBeGreaterThanOrEqual(0.25 * CASES);
   }, 60_000);
+});
+
+describe('chain leaf against paper.js', () => {
+  const src0 = (id: string): Source => ({ id, copy: 0 });
+  const circle = (cx: number, cy: number, r: number): ChainSupport => ({
+    kind: 'circle',
+    circle: { cx, cy, r },
+  });
+  const straight = (a: Vec, b: Vec): ChainSupport => ({ kind: 'line', line: lineThrough(a, b) });
+  const piece = (support: ChainSupport, concave = false, corner?: Vec): ChainInput =>
+    corner === undefined ? { support, concave } : { support, concave, corner };
+  const chain = (id: string, input: ChainInput[]): RegionNode => ({
+    kind: 'chain',
+    pieces: buildChain(input).pieces,
+    source: src0(id),
+  });
+  const disc = (id: string, cx: number, cy: number, r: number): RegionNode => ({
+    kind: 'disc',
+    circle: { cx, cy, r },
+    source: src0(id),
+  });
+  const half = (id: string, a: Vec, b: Vec): RegionNode => ({
+    kind: 'half',
+    line: lineThrough(a, b),
+    sign: 1,
+    source: src0(id),
+  });
+  const rect = (id: string, x0: number, y0: number, x1: number, y1: number): RegionNode => ({
+    kind: 'poly',
+    loops: [
+      [
+        { x: x0, y: y0 },
+        { x: x1, y: y0 },
+        { x: x1, y: y1 },
+        { x: x0, y: y1 },
+      ],
+    ],
+    source: src0(id),
+  });
+  const op = (kind: Op, ...children: RegionNode[]): RegionNode => ({ kind, children });
+
+  const lens = (): RegionNode =>
+    chain('lens', [
+      piece(circle(3, 0, 5), false, { x: 0, y: -5 }),
+      piece(circle(-3, 0, 5), false, { x: 0, y: 5 }),
+    ]);
+  const outer = (): RegionNode =>
+    chain('outer', [
+      piece(circle(-3, 0, 5), false, { x: 0, y: -5 }),
+      piece(circle(3, 0, 5), false, { x: 0, y: 5 }),
+    ]);
+  const fillet = (): RegionNode =>
+    chain('fillet', [
+      piece(circle(-3, 0, 2)),
+      piece(circle(0, -4, 3), true),
+      piece(circle(3, 0, 2)),
+      piece(circle(0, 4, 3), true),
+    ]);
+  const stadium = (id: string, r: number, a: number, vertical = false): RegionNode => {
+    const t = (x: number, y: number): Vec => (vertical ? { x: -y, y: x } : { x, y });
+    return chain(id, [
+      piece(straight(t(0, -r), t(1, -r))),
+      piece(vertical ? circle(0, a, r) : circle(a, 0, r)),
+      piece(straight(t(0, r), t(1, r))),
+      piece(vertical ? circle(0, -a, r) : circle(-a, 0, r)),
+    ]);
+  };
+  const ring = (): RegionNode =>
+    chain(
+      'ring',
+      Array.from({ length: 40 }, (_, k) => {
+        const c = pointOnCircle({ cx: 0, cy: 0, r: 6 }, 9 * k);
+        return piece(
+          circle(c.x, c.y, 0.6),
+          k % 2 === 1,
+          pointOnCircle({ cx: 0, cy: 0, r: 5.6 }, 9 * k + 4.5),
+        );
+      }),
+    );
+  const west = (): RegionNode => half('h', { x: 0, y: -1 }, { x: 0, y: 1 });
+  const north = (): RegionNode => half('n', { x: -1, y: 0 }, { x: 1, y: 0 });
+
+  const cases: [string, () => RegionNode][] = [
+    ['lens alone', () => lens()],
+    ['fillet alone', () => fillet()],
+    ['stadium alone', () => stadium('s', 2, 2.5)],
+    ['lens and a half-plane through both joints', () => op('intersect', lens(), west())],
+    ['lens minus a half-plane through both joints', () => op('subtract', lens(), west())],
+    ['lens and a disc on a piece circle', () => op('union', lens(), disc('b', 3, 0, 5))],
+    ['disc on a piece circle minus the lens', () => op('subtract', disc('b', 3, 0, 5), lens())],
+    ['fillet and a disc on a lobe circle', () => op('union', fillet(), disc('a', -3, 0, 2))],
+    [
+      'fillet minus a disc 6e-8 off a lobe circle',
+      () => op('subtract', fillet(), disc('a', -3 + 6e-8, 0, 2)),
+    ],
+    [
+      'fillet and a disc 6e-8 off a lobe circle',
+      () => op('union', fillet(), disc('a', -3 + 6e-8, 0, 2)),
+    ],
+    ['fillet around a disc', () => op('subtract', fillet(), disc('o', 0, 0, 0.5))],
+    ['disc around the lens', () => op('subtract', disc('o', 0, 0, 10), lens())],
+    ['union of two stadiums', () => op('union', stadium('h', 1, 3), stadium('v', 1, 3, true))],
+    [
+      'intersection of two stadiums',
+      () => op('intersect', stadium('h', 1, 3), stadium('v', 1, 3, true)),
+    ],
+    ['union of the lens and the outer arcs', () => op('union', lens(), outer())],
+    [
+      'stadium minus a rectangle',
+      () => op('subtract', stadium('s', 1, 2), rect('r', -1, -3, 1, 3)),
+    ],
+    [
+      'stadium and a rectangle on its lines',
+      () => op('union', stadium('s', 1, 2), rect('r', -2, -1, 2, 1)),
+    ],
+    ['forty circles', () => ring()],
+    ['forty circles and a half-plane', () => op('intersect', ring(), north())],
+  ];
+
+  it.each(cases)('%s', (_name, build) => {
+    const tree = build();
+    const area = arrange(tree).area;
+    const expected = paperArea(toPaper(tree));
+    expect(expected).toBeGreaterThan(0);
+    expect(Math.abs(area - expected)).toBeLessThanOrEqual(0.01 * expected);
+  });
 });

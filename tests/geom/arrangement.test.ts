@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Edge, FillResult } from '../../src/geom/arrangement.js';
 import { arrange } from '../../src/geom/arrangement.js';
+import type { ChainInput, ChainSupport } from '../../src/geom/chain.js';
+import { buildChain } from '../../src/geom/chain.js';
 import type { Vec } from '../../src/geom/primitives.js';
 import { distance, lineThrough, pointOnCircle, signedDistance } from '../../src/geom/primitives.js';
 import type { RegionNode, Source } from '../../src/geom/region.js';
@@ -55,13 +57,20 @@ const lensArea = (r: number, d: number): number => {
 };
 
 const leavesOf = (node: RegionNode): Extract<RegionNode, { source: Source }>[] =>
-  node.kind === 'disc' || node.kind === 'half' || node.kind === 'poly'
+  node.kind === 'disc' || node.kind === 'half' || node.kind === 'poly' || node.kind === 'chain'
     ? [node]
     : node.children.flatMap(leavesOf);
 
 /** Whether an edge lies on the boundary curve of a leaf. */
 const edgeOnLeaf = (e: Edge, leaf: Extract<RegionNode, { source: Source }>): boolean => {
   const tol = 1e-7;
+  if (leaf.kind === 'chain') {
+    return leaf.pieces.some((p) =>
+      p.kind === 'arc'
+        ? edgeOnLeaf(e, { kind: 'disc', circle: p.circle, source: leaf.source })
+        : edgeOnLeaf(e, { kind: 'half', line: p.line, sign: 1, source: leaf.source }),
+    );
+  }
   if (leaf.kind === 'disc') {
     const c = leaf.circle;
     return (
@@ -376,5 +385,181 @@ describe('arrange: half-planes and polygons', () => {
     expect(res.loops[0]).toHaveLength(12);
     expectArea(res, Math.sqrt(3));
     expectArea(run(intersect(poly('star', t1, t2), disc('d', 0, 0, 1))), Math.sqrt(3));
+  });
+});
+
+describe('arrange: chain leaf', () => {
+  const circle = (cx: number, cy: number, r: number): ChainSupport => ({
+    kind: 'circle',
+    circle: { cx, cy, r },
+  });
+  const straight = (a: Vec, b: Vec): ChainSupport => ({ kind: 'line', line: lineThrough(a, b) });
+  const piece = (support: ChainSupport, concave = false, corner?: Vec): ChainInput =>
+    corner === undefined ? { support, concave } : { support, concave, corner };
+  const chain = (id: string, input: ChainInput[]): RegionNode => ({
+    kind: 'chain',
+    pieces: buildChain(input).pieces,
+    source: { id, copy: 0 },
+  });
+
+  // Lens of the circles (-3, 0) r 5 and (3, 0) r 5, joints (0, -4) and (0, 4).
+  const lens = (): RegionNode =>
+    chain('lens', [
+      piece(circle(3, 0, 5), false, { x: 0, y: -5 }),
+      piece(circle(-3, 0, 5), false, { x: 0, y: 5 }),
+    ]);
+  const lensTheta = 2 * Math.atan2(4, 3);
+  const lensArea = 25 * (lensTheta - Math.sin(lensTheta));
+  // Lobes (-3, 0) r 2 and (3, 0) r 2 joined by concave fillets (0, -4) r 3 and (0, 4) r 3.
+  const fillet = (): RegionNode =>
+    chain('fillet', [
+      piece(circle(-3, 0, 2)),
+      piece(circle(0, -4, 3), true),
+      piece(circle(3, 0, 2)),
+      piece(circle(0, 4, 3), true),
+    ]);
+  const filletTheta = 2 * Math.atan(4 / 3);
+  const filletArea = 24 - 9 * (Math.PI - filletTheta) + 4 * (2 * Math.PI - filletTheta);
+  // Stadium of radius r around the segment from (-a, 0) to (a, 0), or its transpose.
+  const stadium = (id: string, r: number, a: number, vertical = false): RegionNode => {
+    const t = (x: number, y: number): Vec => (vertical ? { x: -y, y: x } : { x, y });
+    return chain(id, [
+      piece(straight(t(0, -r), t(1, -r))),
+      piece(vertical ? circle(0, a, r) : circle(a, 0, r)),
+      piece(straight(t(0, r), t(1, r))),
+      piece(vertical ? circle(0, -a, r) : circle(-a, 0, r)),
+    ]);
+  };
+  // Forty radius-0.6 circles 9 degrees apart on a radius-6 ring, even ones bulging, odd ones
+  // cutting in, every joint the inner crossing of neighbours.
+  const ring = (): RegionNode =>
+    chain(
+      'ring',
+      Array.from({ length: 40 }, (_, k) => {
+        const c = pointOnCircle({ cx: 0, cy: 0, r: 6 }, 9 * k);
+        return piece(
+          circle(c.x, c.y, 0.6),
+          k % 2 === 1,
+          pointOnCircle({ cx: 0, cy: 0, r: 5.6 }, 9 * k + 4.5),
+        );
+      }),
+    );
+  const ringRho = 6 * Math.cos(Math.PI / 40) - Math.sqrt(0.36 - (6 * Math.sin(Math.PI / 40)) ** 2);
+  const ringAlpha = 2 * Math.asin((ringRho * Math.sin(Math.PI / 40)) / 0.6);
+  // Forty-gon of the joints, plus twenty major segments, minus twenty minor ones.
+  const ringArea =
+    20 * ringRho * ringRho * Math.sin(Math.PI / 20) +
+    3.6 * (2 * Math.PI - 2 * ringAlpha + 2 * Math.sin(ringAlpha));
+
+  const expectNear = (res: FillResult, expected: number, tol: number): void => {
+    expect(Math.abs(res.area - expected)).toBeLessThanOrEqual(tol);
+  };
+  // x < 0
+  const west = (): RegionNode => half('h', { x: 0, y: -1 }, { x: 0, y: 1 });
+
+  it('a chain alone has its own area', () => {
+    const l = run(lens());
+    expect(l.loops).toHaveLength(1);
+    expectArea(l, lensArea);
+    expect(l.bbox).toEqual({ minX: -2, minY: -4, maxX: 2, maxY: 4 });
+    const f = run(fillet());
+    expect(f.loops).toHaveLength(1);
+    expectArea(f, filletArea);
+    const s = run(stadium('s', 2, 2.5));
+    expect(s.loops).toHaveLength(1);
+    expectArea(s, 4 * Math.PI + 20);
+  });
+
+  it('a half-plane through both joints of the lens', () => {
+    const inter = run(intersect(lens(), west()));
+    expect(inter.loops).toHaveLength(1);
+    expectArea(inter, lensArea / 2);
+    const diff = run(subtract(lens(), west()));
+    expect(diff.loops).toHaveLength(1);
+    expectArea(diff, lensArea / 2);
+  });
+
+  it('a disc on the same circle as a piece', () => {
+    const uni = run(union(lens(), disc('b', 3, 0, 5)));
+    expect(uni.loops).toHaveLength(1);
+    expectArea(uni, 25 * Math.PI);
+    const crescent = run(subtract(disc('b', 3, 0, 5), lens()));
+    expect(crescent.loops).toHaveLength(1);
+    expectArea(crescent, 25 * Math.PI - lensArea);
+    const lobes = run(union(fillet(), disc('a', -3, 0, 2)));
+    expect(lobes.loops).toHaveLength(1);
+    expectArea(lobes, filletArea);
+  });
+
+  it('a disc 6e-8 off the circle of a piece', () => {
+    const empty = run(subtract(lens(), disc('b', 3 + 6e-8, 0, 5)));
+    expect(empty.loops).toHaveLength(0);
+    const cut = run(subtract(fillet(), disc('a', -3 + 6e-8, 0, 2)));
+    expect(cut.loops).toHaveLength(1);
+    expectNear(cut, filletArea - 4 * Math.PI, 1e-5);
+    const kept = run(union(fillet(), disc('a', -3 + 6e-8, 0, 2)));
+    expect(kept.loops).toHaveLength(1);
+    expectNear(kept, filletArea, 1e-5);
+  });
+
+  it('a chain around a disc', () => {
+    const hole = run(subtract(fillet(), disc('o', 0, 0, 0.5)));
+    expect(hole.loops).toHaveLength(2);
+    expectArea(hole, filletArea - Math.PI / 4);
+    expectArea(run(union(fillet(), disc('o', 0, 0, 0.5))), filletArea);
+    expectArea(run(intersect(fillet(), disc('o', 0, 0, 0.5))), Math.PI / 4);
+  });
+
+  it('a disc around a chain', () => {
+    const ring10 = run(subtract(disc('o', 0, 0, 10), lens()));
+    expect(ring10.loops).toHaveLength(2);
+    expectArea(ring10, 100 * Math.PI - lensArea);
+    expectArea(run(intersect(disc('o', 0, 0, 10), lens())), lensArea);
+  });
+
+  it('two chains', () => {
+    const across = (): RegionNode => stadium('h', 1, 3);
+    const upright = (): RegionNode => stadium('v', 1, 3, true);
+    const uni = run(union(across(), upright()));
+    expect(uni.loops).toHaveLength(1);
+    expectArea(uni, 2 * Math.PI + 20);
+    const inter = run(intersect(across(), upright()));
+    expect(inter.loops).toHaveLength(1);
+    expectArea(inter, 4);
+    const lenses = run(
+      union(
+        lens(),
+        chain('outer', [
+          piece(circle(-3, 0, 5), false, { x: 0, y: -5 }),
+          piece(circle(3, 0, 5), false, { x: 0, y: 5 }),
+        ]),
+      ),
+    );
+    expect(lenses.loops).toHaveLength(1);
+    expectArea(lenses, 50 * Math.PI - lensArea);
+  });
+
+  it('a chain and polygons', () => {
+    const s = (): RegionNode => stadium('s', 1, 2);
+    const inter = run(intersect(s(), rect('r', -1, -3, 1, 3)));
+    expect(inter.loops).toHaveLength(1);
+    expectArea(inter, 4);
+    const diff = run(subtract(s(), rect('r', -1, -3, 1, 3)));
+    expect(diff.loops).toHaveLength(2);
+    expectArea(diff, Math.PI + 4);
+    // The rectangle's long sides lie on the stadium's lines.
+    const uni = run(union(s(), rect('r', -2, -1, 2, 1)));
+    expect(uni.loops).toHaveLength(1);
+    expectArea(uni, Math.PI + 8);
+  });
+
+  it('forty circles in one chain', () => {
+    const alone = run(ring());
+    expect(alone.loops).toHaveLength(1);
+    expectArea(alone, ringArea);
+    const north = run(intersect(ring(), half('n', { x: -1, y: 0 }, { x: 1, y: 0 })));
+    expect(north.loops).toHaveLength(1);
+    expectArea(north, ringArea / 2);
+    expectArea(run(union(ring(), disc('o', 0, 0, 3))), ringArea);
   });
 });

@@ -3,7 +3,7 @@ import type { Circle, Line, Vec } from '../geom/primitives.js';
 import { pointOnCircle } from '../geom/primitives.js';
 import type { RepeatElement, ResolvedElement, ResolvedModel } from '../resolve/resolve.js';
 import type { Spec } from '../spec/schema.js';
-import { arcParts, finalMarkup, num } from './svg.js';
+import { arcParts, chainPathData, finalMarkup, num } from './svg.js';
 
 const SHEET_WIDTH = 1000;
 const DRAWING_SIZE = 1000;
@@ -40,6 +40,9 @@ const HELPER_WIDTH = 0.8;
 /** Construction lines over the finished drawing are thicker so they show at 512 px. */
 const GUIDE_WIDTH = 1.8;
 const ARC_WIDTH_FACTOR = 2.5;
+const OUTLINE_WIDTH_FACTOR = 1.5;
+/** Half side of a corner marker and radius of a tangent marker, in sheet pixels. */
+const JOINT_MARK_SIZE = 4;
 const COPY_OPACITY = 0.4;
 const MARK_FILL_OPACITY = 0.15;
 const FIGURE_TINT_OPACITY = 0.25;
@@ -58,6 +61,8 @@ export type SheetInput = {
   fills: readonly FillResult[];
   violations: readonly SheetViolation[];
   exceptionsApplied: readonly SheetException[];
+  /** Reference image drawn over the whole canvas, under the final drawing's tint. */
+  underlay?: { href: string };
 };
 
 export type SheetOutput = { svg: string; width: number; height: number };
@@ -126,6 +131,10 @@ function legendRow(el: ResolvedElement): string {
       const value = String(Number(el.circle.r.toFixed(4)));
       const radius = el.label === value ? value : `${el.label} = ${value}`;
       return `${el.id}  ${el.type}  r = ${radius}`;
+    }
+    case 'outline': {
+      const corners = el.joints.filter((j) => j.kind === 'corner').length;
+      return `${el.id}  outline  ${el.pieces.length} pieces, ${corners} ${corners === 1 ? 'corner' : 'corners'}`;
     }
     case 'repeat':
       return `${el.id}  repeat  ${el.copyCount} placements`;
@@ -310,7 +319,26 @@ function helperMarkup(
         (loop) =>
           `<polygon points="${loop.map((p) => `${num(sx(f, p.x))} ${num(sy(f, p.y))}`).join(' ')}" ${stroke}/>`,
       );
+    case 'outline': {
+      const d = chainPathData(el.pieces, (p) => ({ x: sx(f, p.x), y: sy(f, p.y) }), f.scale);
+      return [
+        `<path d="${d}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * OUTLINE_WIDTH_FACTOR)}"${extra}/>`,
+      ];
+    }
   }
+}
+
+/** One marker per joint: a small circle where the outline is smooth, a small square at a corner. */
+function jointMarkup(el: Extract<ResolvedElement, { type: 'outline' }>, f: Frame): string[] {
+  return el.joints.map((j) => {
+    const x = sx(f, j.at.x);
+    const y = sy(f, j.at.y);
+    if (j.kind === 'tangent') {
+      return `<circle cx="${num(x)}" cy="${num(y)}" r="${JOINT_MARK_SIZE}" fill="${HELPER_COLOR}"/>`;
+    }
+    const side = 2 * JOINT_MARK_SIZE;
+    return `<rect x="${num(x - JOINT_MARK_SIZE)}" y="${num(y - JOINT_MARK_SIZE)}" width="${side}" height="${side}" fill="${HELPER_COLOR}"/>`;
+  });
 }
 
 /** Where an element's id tag goes, in module coordinates; `bearing` places a circle's tag on its circumference. */
@@ -330,6 +358,8 @@ function anchorOf(el: ResolvedElement | RepeatElement, f: Frame, bearing: number
     case 'polygon':
     case 'points':
       return el.vertices[0] ?? null;
+    case 'outline':
+      return el.pieces[0]?.start ?? null;
     case 'repeat': {
       const first = el.copies[0];
       return first === undefined ? null : anchorOf(first.element, f, bearing);
@@ -372,6 +402,9 @@ function constructionMarkup(model: ResolvedModel, f: Frame): { helpers: string[]
       helpers.push(`<g data-id="${id}" data-kind="repeat">${inner.join('')}</g>`);
     } else {
       inner.push(...helperMarkup(el, f, true, ''));
+      if (el.type === 'outline') {
+        inner.push(...jointMarkup(el, f));
+      }
       helpers.push(`<g data-id="${id}">${inner.join('')}</g>`);
     }
     // A fixed bearing step per element keeps concentric circles' tags apart.
@@ -454,6 +487,11 @@ export function renderSheetSvg(input: SheetInput): SheetOutput {
     ...tickMarkup(model, f),
     `<clipPath id="drawing-area"><rect x="0" y="0" width="${DRAWING_SIZE}" height="${DRAWING_SIZE}"/></clipPath>`,
     '<g clip-path="url(#drawing-area)">',
+    ...(input.underlay === undefined
+      ? []
+      : [
+          `<image x="0" y="0" width="${DRAWING_SIZE}" height="${DRAWING_SIZE}" preserveAspectRatio="none" href="${escapeXml(input.underlay.href)}"/>`,
+        ]),
     finalInSheet,
     ...helpers,
     '</g>',

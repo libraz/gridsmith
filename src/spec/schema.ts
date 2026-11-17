@@ -314,6 +314,31 @@ const pointsShape = z.strictObject({
   through: listOf(pointSchema, 'through', 3, 32),
 });
 
+const outlinePiece = z.union(
+  [
+    refId('piece'),
+    z.strictObject({
+      on: refId('on'),
+      concave: z.boolean({ error: complain('concave', 'true or false') }).optional(),
+      corner: pointSchema.optional(),
+    }),
+  ],
+  {
+    error: unionError('outline piece', 'an element id or { on, concave?, corner? }', (input) => {
+      if (typeof input === 'string') {
+        return 0;
+      }
+      return typeof input === 'object' && input !== null && !Array.isArray(input) ? 1 : undefined;
+    }),
+  },
+);
+
+const outlineShape = z.strictObject({
+  id: idSchema,
+  type: z.literal('outline'),
+  through: listOf(outlinePiece, 'through', 2, 64),
+});
+
 const repeatShape = z
   .strictObject({
     id: idSchema,
@@ -344,12 +369,13 @@ const shapeSchema = z.discriminatedUnion(
     arcShape,
     polygonShape,
     pointsShape,
+    outlineShape,
     repeatShape,
   ],
   {
     error: complain(
       'type',
-      'one of "point", "circle", "tangent_circle", "line", "arc", "polygon", "points", "repeat"',
+      'one of "point", "circle", "tangent_circle", "line", "arc", "polygon", "points", "outline", "repeat"',
     ),
   },
 );
@@ -410,6 +436,8 @@ export type LineShape = z.infer<typeof lineShape>;
 export type PolygonShape = z.infer<typeof polygonShape>;
 export type ArcShape = z.infer<typeof arcShape>;
 export type PointsShape = z.infer<typeof pointsShape>;
+export type OutlineShape = z.infer<typeof outlineShape>;
+export type OutlinePiece = z.infer<typeof outlinePiece>;
 export type RepeatShape = z.infer<typeof repeatShape>;
 export type CircleLikeShape = CircleShape | TangentCircleShape;
 export type FillLayer = z.infer<typeof fillLayer>;
@@ -488,6 +516,13 @@ export function shapeReferences(shape: Shape): string[] {
     case 'points':
       ids = shape.through.flatMap(pointReferences);
       break;
+    case 'outline':
+      ids = shape.through.flatMap((piece) =>
+        typeof piece === 'string'
+          ? [piece]
+          : [piece.on, ...(piece.corner === undefined ? [] : pointReferences(piece.corner))],
+      );
+      break;
     case 'repeat':
       ids = [...shape.of, ...pointReferences(shape.center)];
       break;
@@ -542,14 +577,10 @@ const POINT_REF = kindSet('the id of a point, circle or tangent_circle', [
   'tangent_circle',
 ]);
 const LINE_ONLY = kindSet('the id of a line', ['line']);
-const REPEATABLE = kindSet('the id of a circle, tangent_circle, line, arc, polygon or points', [
-  'circle',
-  'tangent_circle',
-  'line',
-  'arc',
-  'polygon',
-  'points',
-]);
+const REPEATABLE = kindSet(
+  'the id of a circle, tangent_circle, line, arc, polygon, points or outline',
+  ['circle', 'tangent_circle', 'line', 'arc', 'polygon', 'points', 'outline'],
+);
 const STROKABLE = kindSet('the id of any shape except point', [
   'circle',
   'tangent_circle',
@@ -557,22 +588,17 @@ const STROKABLE = kindSet('the id of any shape except point', [
   'arc',
   'polygon',
   'points',
+  'outline',
   'repeat',
 ]);
-const ERASABLE = kindSet('the id of a circle, tangent_circle, polygon, points or repeat of those', [
-  'circle',
-  'tangent_circle',
-  'polygon',
-  'points',
-  'repeat',
-]);
-const REGION_LEAF = kindSet('the id of a circle, tangent_circle, polygon, points or repeat', [
-  'circle',
-  'tangent_circle',
-  'polygon',
-  'points',
-  'repeat',
-]);
+const ERASABLE = kindSet(
+  'the id of a circle, tangent_circle, polygon, points, outline or repeat of those',
+  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat'],
+);
+const REGION_LEAF = kindSet(
+  'the id of a circle, tangent_circle, polygon, points, outline or repeat',
+  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat'],
+);
 
 const TARGET_PAINT = /^paint\[(0|[1-9][0-9]*)\]$/;
 
@@ -586,6 +612,7 @@ const curveCount = (shape: Shape): number => {
     case 'polygon':
       return shape.n;
     case 'points':
+    case 'outline':
       return shape.through.length;
     default:
       return 1;
@@ -729,6 +756,24 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
       case 'points':
         for (const [k, p] of shape.through.entries()) {
           checkPoint(p, at('through', k), i, earlier, 0);
+        }
+        break;
+      case 'outline':
+        for (const [k, piece] of shape.through.entries()) {
+          if (typeof piece === 'string') {
+            lookup(piece, i, at('through', k), CIRCLE_OR_LINE, earlier);
+            continue;
+          }
+          lookup(piece.on, i, at('through', k, 'on'), CIRCLE_OR_LINE, earlier);
+          if (piece.concave !== undefined && byId.get(piece.on)?.shape.type === 'line') {
+            add(
+              at('through', k, 'concave'),
+              `concave is not allowed on a line piece (received: ${show(piece.concave)} on line ${show(piece.on)}; allowed: concave only on a circle or tangent_circle piece)`,
+            );
+          }
+          if (piece.corner !== undefined) {
+            checkPoint(piece.corner, at('through', k, 'corner'), i, earlier, 1);
+          }
         }
         break;
       case 'repeat': {

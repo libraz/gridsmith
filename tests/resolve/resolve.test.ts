@@ -1111,3 +1111,386 @@ describe('erase resolution', () => {
     ).toEqual([]);
   });
 });
+
+describe('outline element resolution', () => {
+  const lens = (dx = 0): ShapeInput[] => [circle('a', dx - 3, 0, 5), circle('b', dx + 3, 0, 5)];
+  const lensThrough = (dx = 0): unknown[] => [
+    { on: 'a', corner: [dx, 4] },
+    { on: 'b', corner: [dx, -4] },
+  ];
+  const line = (id: string, from: [number, number], to: [number, number]): ShapeInput => ({
+    id,
+    type: 'line',
+    from,
+    to,
+  });
+  const outlineSpec = (
+    shapes: ShapeInput[],
+    through: unknown[],
+    extra: ShapeInput[] = [],
+    stroke = 'o',
+  ): SpecInput =>
+    build(
+      [...shapes, { id: 'o', type: 'outline', through }, ...extra],
+      [{ stroke: [stroke], width: 0.125 }],
+      { grid: { divisions: 8 } },
+    );
+  const outlineOf = (shapes: ShapeInput[], through: unknown[], extra: ShapeInput[] = []) =>
+    get(model(outlineSpec(shapes, through, extra)), 'o', 'outline');
+  const messageOf = (shapes: ShapeInput[], through: unknown[]): string =>
+    failure(outlineSpec(shapes, through)).find((e) => e.id === 'o')?.message ?? '';
+
+  const stadium: ShapeInput[] = [
+    circle('cl', -2, 0, 1),
+    circle('cr', 2, 0, 1),
+    line('bottom', [-2, -1], [2, -1]),
+    line('top', [2, 1], [-2, 1]),
+  ];
+  const stadiumThrough = ['bottom', 'cr', 'top', 'cl'];
+  const triangle: ShapeInput[] = [
+    line('l1', [-3, -3], [3, -3]),
+    line('l2', [3, -3], [0, 3]),
+    line('l3', [0, 3], [-3, -3]),
+  ];
+  const turnsOf = (o: { joints: { turn: number }[] }): number[] => o.joints.map((j) => j.turn);
+
+  it('resolves the pieces and joints of a stadium', () => {
+    const o = outlineOf(stadium, stadiumThrough);
+    expect(o.pieces.map((p) => p.kind)).toEqual(['line', 'arc', 'line', 'arc']);
+    const [bottom, right, top, left] = o.pieces;
+    expect(bottom?.start.x).toBeCloseTo(-2, 9);
+    expect(bottom?.start.y).toBeCloseTo(-1, 9);
+    expect(bottom?.end.x).toBeCloseTo(2, 9);
+    expect(right?.end.x).toBeCloseTo(2, 9);
+    expect(right?.end.y).toBeCloseTo(1, 9);
+    expect(top?.end.x).toBeCloseTo(-2, 9);
+    expect(left?.end.y).toBeCloseTo(-1, 9);
+    expect(o.joints.map((j) => j.kind)).toEqual(['tangent', 'tangent', 'tangent', 'tangent']);
+    for (const t of turnsOf(o)) {
+      expect(t).toBeCloseTo(0, 6);
+    }
+    expect(o.area).toBeCloseTo(Math.PI + 8, 9);
+  });
+
+  it('resolves a triangle of lines with corner joints', () => {
+    const o = outlineOf(triangle, ['l1', 'l2', 'l3']);
+    expect(o.area).toBeCloseTo(18, 9);
+    expect(o.joints.map((j) => j.kind)).toEqual(['corner', 'corner', 'corner']);
+    expect(o.joints[0]?.at.x).toBeCloseTo(3, 9);
+    expect(o.joints[0]?.at.y).toBeCloseTo(-3, 9);
+  });
+
+  it('resolves the lens of two circles from two corners', () => {
+    const o = outlineOf(lens(), lensThrough());
+    expect(o.pieces).toHaveLength(2);
+    expect(o.joints[0]?.at.x).toBeCloseTo(0, 9);
+    expect(o.joints[0]?.at.y).toBeCloseTo(4, 9);
+    expect(o.joints[1]?.at.y).toBeCloseTo(-4, 9);
+    expect(o.joints.map((j) => j.kind)).toEqual(['corner', 'corner']);
+    const turn = (Math.atan2(24, 7) * 180) / Math.PI;
+    for (const t of turnsOf(o)) {
+      expect(t).toBeCloseTo(turn, 6);
+    }
+    expect(o.area).toBeCloseTo(50 * Math.acos(0.6) - 24, 9);
+  });
+
+  it('accepts a bare id and an { on } object alike', () => {
+    const plain = outlineOf(stadium, ['bottom', 'cr', 'top', 'cl']);
+    const objects = outlineOf(stadium, [
+      { on: 'bottom' },
+      { on: 'cr' },
+      { on: 'top' },
+      { on: 'cl' },
+    ]);
+    expect(objects.area).toBeCloseTo(plain.area, 12);
+  });
+
+  it('accepts the same line twice when its ranges are apart', () => {
+    const notch: ShapeInput[] = [
+      line('base', [0, 0], [6, 0]),
+      line('right', [6, 0], [6, 4]),
+      line('top', [6, 4], [0, 4]),
+      line('inner_r', [4, 4], [4, 2]),
+      line('floor', [4, 2], [2, 2]),
+      line('inner_l', [2, 2], [2, 4]),
+      line('left', [0, 4], [0, 0]),
+    ];
+    const through = ['base', 'right', 'top', 'inner_r', 'floor', 'inner_l', 'top', 'left'];
+    const o = outlineOf(notch, through);
+    expect(o.pieces).toHaveLength(8);
+    expect(o.area).toBeCloseTo(20, 9);
+  });
+
+  describe('repeat', () => {
+    const repeatSpec = (shapes: ShapeInput[], through: unknown[], rep: ShapeInput) =>
+      outlineSpec(shapes, through, [{ id: 'rep', type: 'repeat', of: ['o'], ...rep }], 'rep');
+
+    it('rotates into counter-clockwise copies with the same turns', () => {
+      const m = model(repeatSpec(lens(4), lensThrough(4), { n: 3, center: [0, 0] }));
+      const rep = get(m, 'rep', 'repeat');
+      const original = get(m, 'o', 'outline');
+      expect(rep.copyCount).toBe(3);
+      expect(rep.copies).toHaveLength(2);
+      rep.copies.forEach((c, k) => {
+        const el = c.element;
+        if (el.type !== 'outline') {
+          throw new Error('expected an outline copy');
+        }
+        expect(el.area).toBeGreaterThan(0);
+        expect(el.area).toBeCloseTo(original.area, 9);
+        turnsOf(el).forEach((t, i) => {
+          expect(t).toBeCloseTo(turnsOf(original)[i] as number, 6);
+        });
+        const a = (120 * (k + 1) * Math.PI) / 180;
+        const start = original.pieces[0]?.start as Vec;
+        expect(el.pieces[0]?.start.x).toBeCloseTo(start.x * Math.cos(a) - start.y * Math.sin(a), 9);
+        expect(el.pieces[0]?.start.y).toBeCloseTo(start.x * Math.sin(a) + start.y * Math.cos(a), 9);
+      });
+    });
+
+    it('mirrors into a counter-clockwise copy with the same turns', () => {
+      const dShape = [circle('a', 0, 0, 5), line('ln', [3, 4], [3, -4])];
+      const through = [
+        { on: 'a', corner: [3, 4] },
+        { on: 'ln', corner: [3, -4] },
+      ];
+      const m = model(repeatSpec(dShape, through, { n: 1, mirror: true, axis: 90 }));
+      const rep = get(m, 'rep', 'repeat');
+      const original = get(m, 'o', 'outline');
+      expect(rep.copyCount).toBe(2);
+      const el = rep.copies[0]?.element;
+      if (el?.type !== 'outline') {
+        throw new Error('expected an outline copy');
+      }
+      expect(el.area).toBeGreaterThan(0);
+      expect(el.area).toBeCloseTo(original.area, 9);
+      const sorted = (xs: number[]): number[] => [...xs].sort((x, y) => x - y);
+      sorted(turnsOf(el)).forEach((t, i) => {
+        expect(t).toBeCloseTo(sorted(turnsOf(original))[i] as number, 6);
+      });
+      expect(el.pieces[0]?.kind).toBe('line');
+      expect(el.pieces[0]?.start.x).toBeCloseTo(-3, 9);
+      expect(el.pieces[0]?.start.y).toBeCloseTo(-4, 9);
+      expect(el.pieces[0]?.end.y).toBeCloseTo(4, 9);
+      expect(el.pieces[1]?.start.y).toBeCloseTo(4, 9);
+    });
+
+    it('drops copies of a symmetric outline', () => {
+      const turned = get(model(repeatSpec(lens(), lensThrough(), { n: 2 })), 'rep', 'repeat');
+      expect(turned.copyCount).toBe(1);
+      expect(turned.copies).toHaveLength(0);
+      const flipped = get(
+        model(repeatSpec(lens(), lensThrough(), { n: 1, mirror: true, axis: 90 })),
+        'rep',
+        'repeat',
+      );
+      expect(flipped.copyCount).toBe(1);
+      expect(flipped.copies).toHaveLength(0);
+    });
+  });
+
+  describe('paint', () => {
+    it('gives a figure stroke and erase a closed chain', () => {
+      const m = model(
+        build(
+          [...lens(), { id: 'o', type: 'outline', through: lensThrough() }],
+          [{ stroke: ['o'], width: 0.125 }, { erase: ['o'] }],
+          { grid: { divisions: 8 } },
+        ),
+      );
+      const item = m.strokes[0]?.items[0];
+      expect(item?.kind).toBe('chain');
+      expect(item?.kind === 'chain' ? item.pieces : []).toHaveLength(2);
+      expect(m.erases[0]?.shapes[0]?.kind).toBe('chain');
+    });
+
+    it('makes a chain leaf of a mark fill', () => {
+      const m = model(
+        build([...lens(), { id: 'o', type: 'outline', through: lensThrough() }], [{ fill: 'o' }], {
+          mode: 'mark',
+          grid: { divisions: 8 },
+        }),
+      );
+      const region = m.fills[0]?.region;
+      expect(region?.kind).toBe('chain');
+      expect(region !== undefined && contains(region, { x: 0, y: 0 })).toBe(true);
+      expect(region !== undefined && contains(region, { x: 4, y: 0 })).toBe(false);
+    });
+  });
+
+  describe('errors', () => {
+    it('same_curve: names both ids of neighbouring pieces on one curve', () => {
+      const shapes = [circle('a', 0, 0, 3), circle('a2', 0, 0, 3)];
+      const msg = messageOf(shapes, ['a', 'a2']);
+      expect(msg).toContain('same curve');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('"a2"');
+    });
+
+    it('same_curve: the last piece wraps to the first', () => {
+      const msg = messageOf(lens(), [
+        { on: 'a', corner: [0, 4] },
+        { on: 'b', corner: [0, -4] },
+        'a',
+      ]);
+      expect(msg).toContain('same curve');
+      expect(msg).toContain('through[2] "a" and through[0] "a"');
+    });
+
+    it('same_curve: the same id twice in a row', () => {
+      const msg = messageOf(lens(), ['a', 'a', 'b']);
+      expect(msg).toContain('same curve');
+    });
+
+    it('no_contact: states the gap between apart circles', () => {
+      const msg = messageOf([circle('a', -3, 0, 1), circle('b', 3, 0, 1)], ['a', 'b']);
+      expect(msg).toContain('do not touch');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('"b"');
+      expect(msg).toContain('apart by 4');
+    });
+
+    it('no_contact: states the gap of nested circles', () => {
+      const msg = messageOf([circle('a', 0, 0, 4), circle('b', 0.5, 0, 1)], ['a', 'b']);
+      expect(msg).toContain('do not touch');
+      expect(msg).toContain('gap of 2.5');
+    });
+
+    it('no_contact: states the gap between a circle and a line', () => {
+      const msg = messageOf([circle('c', 0, 3, 1), line('ln', [-3, 0], [3, 0])], ['c', 'ln']);
+      expect(msg).toContain('do not touch');
+      expect(msg).toContain('"c"');
+      expect(msg).toContain('"ln"');
+      expect(msg).toContain('2 apart');
+    });
+
+    it('no_contact: says parallel for parallel lines', () => {
+      const msg = messageOf([line('p', [-3, 0], [3, 0]), line('q', [-3, 1], [3, 1])], ['p', 'q']);
+      expect(msg).toContain('do not touch');
+      expect(msg).toContain('parallel');
+    });
+
+    it('corner_required: lists both crossings and both ways out', () => {
+      const msg = messageOf(lens(), ['a', 'b']);
+      expect(msg).toContain('needs a corner');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('"b"');
+      expect(msg).toContain('(0.000, 4.000)');
+      expect(msg).toContain('(0.000, -4.000)');
+      expect(msg).toContain('corner');
+      expect(msg).toContain('tangent_circle');
+    });
+
+    it('corner_not_needed: a corner on a tangent joint', () => {
+      const msg = messageOf(stadium, [{ on: 'bottom', corner: [2, -1] }, 'cr', 'top', 'cl']);
+      expect(msg).toContain('no choice to make');
+      expect(msg).toContain('"bottom"');
+      expect(msg).toContain('"cr"');
+      expect(msg).toContain('remove corner');
+    });
+
+    it('corner_not_needed: a corner on a line-line joint', () => {
+      const msg = messageOf(triangle, [{ on: 'l1', corner: [3, -3] }, 'l2', 'l3']);
+      expect(msg).toContain('no choice to make');
+      expect(msg).toContain('"l1"');
+      expect(msg).toContain('"l2"');
+      expect(msg).toContain('remove corner');
+    });
+
+    it('corner_tie: a corner equally close to both crossings', () => {
+      const msg = messageOf(lens(), [
+        { on: 'a', corner: [0, 0] },
+        { on: 'b', corner: [0, -4] },
+      ]);
+      expect(msg).toContain('undecidable');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('"b"');
+      expect(msg).toContain('(0.000, 4.000)');
+      expect(msg).toContain('(0.000, -4.000)');
+    });
+
+    it('zero_length: two tangent circles meet in one point twice', () => {
+      const msg = messageOf([circle('a', -1, 0, 1), circle('b', 1, 0, 1)], ['a', 'b']);
+      expect(msg).toContain('no length');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('(0.000, 0.000)');
+    });
+
+    it('zero_length: two lines meet in one point twice', () => {
+      const msg = messageOf([line('p', [-3, 0], [3, 0]), line('q', [0, -3], [0, 3])], ['p', 'q']);
+      expect(msg).toContain('no length');
+      expect(msg).toContain('"p"');
+      expect(msg).toContain('(0.000, 0.000)');
+    });
+
+    it('direction_mismatch: externally tangent circles swap convex and concave', () => {
+      const tri = [circle('a', -1, 0, 1), circle('b', 1, 0, 1), circle('c', 0, Math.sqrt(3), 1)];
+      const msg = messageOf(tri, ['a', 'b', 'c']);
+      expect(msg).toContain('backwards');
+      expect(msg).toContain('externally tangent');
+      expect(msg).toContain('"a"');
+      expect(msg).toContain('"b"');
+      expect(msg).toContain('swaps convex and concave');
+      expect(msg).toContain('change concave');
+    });
+
+    it('direction_mismatch: a concave circle after a line against its direction', () => {
+      const msg = messageOf(stadium, ['bottom', 'cr', 'top', { on: 'cl', concave: true }]);
+      expect(msg).toContain('backwards');
+      expect(msg).toContain('"top"');
+      expect(msg).toContain('"cl"');
+      expect(msg).toContain('Change concave');
+    });
+
+    it('self_intersection: crossing pieces', () => {
+      const bowtie = [
+        line('l1', [-2, -2], [2, 2]),
+        line('l2', [2, 2], [2, -2]),
+        line('l3', [2, -2], [-2, 2]),
+        line('l4', [-2, 2], [-2, -2]),
+      ];
+      const msg = messageOf(bowtie, ['l1', 'l2', 'l3', 'l4']);
+      expect(msg).toContain('touch or cross');
+      expect(msg).toContain('"l1"');
+      expect(msg).toContain('"l3"');
+      expect(msg).toContain('(0.000, 0.000)');
+      expect(msg).toContain('counter-clockwise');
+    });
+
+    it('self_intersection: a vertex touching a non-neighbouring piece', () => {
+      const pinched = [
+        line('e0', [0, 0], [6, 0]),
+        line('e1', [6, 0], [6, 6]),
+        line('e2', [6, 6], [3, 0]),
+        line('e3', [3, 0], [0, 6]),
+        line('e4', [0, 6], [0, 0]),
+      ];
+      const msg = messageOf(pinched, ['e0', 'e1', 'e2', 'e3', 'e4']);
+      expect(msg).toContain('touch or cross');
+      expect(msg).toContain('"e0"');
+      expect(msg).toContain('"e2"');
+      expect(msg).toContain('(3.000, 0.000)');
+    });
+
+    it('clockwise: asks for a counter-clockwise order', () => {
+      const msg = messageOf(triangle, ['l1', 'l3', 'l2']);
+      expect(msg).toContain('clockwise');
+      expect(msg).toContain('counter-clockwise');
+    });
+
+    it('returns the earlier cause when there are two', () => {
+      // A corner on a line-line joint and a clockwise order: the corner is checked first.
+      const corner = messageOf(triangle, [{ on: 'l1', corner: [3, -3] }, 'l3', 'l2']);
+      expect(corner).toContain('no choice to make');
+      // A tie and a crossing outline: the joints are checked before the pieces.
+      const tie = messageOf(lens(), [{ on: 'a', corner: [0, 0] }, 'b']);
+      expect(tie).toContain('undecidable');
+    });
+
+    it('blocks the paint layer that uses a failed outline', () => {
+      const errors = failure(outlineSpec(lens(), ['a', 'b']));
+      expect(errors.map((e) => e.id)).toEqual(['o', 'paint[0]']);
+      expect(errors[1]?.dependsOn).toBe('o');
+    });
+  });
+});

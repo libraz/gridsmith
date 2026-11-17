@@ -16,7 +16,7 @@ import {
   sub,
 } from './primitives.js';
 import type { Bounds, RegionNode, Source } from './region.js';
-import { boundsOfBoundedLeaves, isBounded } from './region.js';
+import { boundsOfBoundedLeaves, contains, isBounded } from './region.js';
 
 export type SegmentEdge = {
   kind: 'segment';
@@ -54,7 +54,7 @@ export class ArrangementInvariantError extends Error {
   }
 }
 
-type Leaf = Extract<RegionNode, { kind: 'disc' | 'half' | 'poly' }>;
+type Leaf = Extract<RegionNode, { kind: 'disc' | 'half' | 'poly' | 'chain' }>;
 
 type CurveGeom = { kind: 'circle'; circle: Circle } | { kind: 'line'; line: Line };
 
@@ -63,7 +63,10 @@ type Curve = { geom: CurveGeom; sources: Source[] };
 /** A polygon edge on a merged support line; `pa`/`pb` index the point list. */
 type PolyEdge = { a: Vec; b: Vec; curve: number; pa: number; pb: number };
 
-type LeafInfo = { node: Leaf; curve: number; edges: PolyEdge[] };
+/** A chain piece on a merged curve; `entry`/`exit` index the point list. */
+type ChainRef = { curve: number; entry: number; exit: number; ccw: boolean };
+
+type LeafInfo = { node: Leaf; curve: number; edges: PolyEdge[]; pieces: ChainRef[] };
 
 type Vertex = { p: Vec; curves: Set<number> };
 
@@ -100,10 +103,11 @@ export function arrange(node: RegionNode): FillResult {
   const leaves: Leaf[] = [];
   collectLeaves(node, leaves, leafIndex);
 
-  // Raw support curves: one per disc or half, one per polygon edge.
+  // Raw support curves: one per disc or half, one per polygon edge, one per chain piece.
   const raw: { geom: CurveGeom; source: Source }[] = [];
   const leafRaw: number[] = [];
   const rawPolyEdges: { leaf: number; a: Vec; b: Vec; raw: number }[] = [];
+  const rawChains: { leaf: number; first: number }[] = [];
   leaves.forEach((leaf, li) => {
     if (leaf.kind === 'disc') {
       leafRaw.push(
@@ -111,6 +115,16 @@ export function arrange(node: RegionNode): FillResult {
       );
     } else if (leaf.kind === 'half') {
       leafRaw.push(raw.push({ geom: { kind: 'line', line: leaf.line }, source: leaf.source }) - 1);
+    } else if (leaf.kind === 'chain') {
+      leafRaw.push(-1);
+      rawChains.push({ leaf: li, first: raw.length });
+      for (const piece of leaf.pieces) {
+        const geom: CurveGeom =
+          piece.kind === 'arc'
+            ? { kind: 'circle', circle: piece.circle }
+            : { kind: 'line', line: piece.line };
+        raw.push({ geom, source: leaf.source });
+      }
     } else {
       leafRaw.push(-1);
       for (const loop of leaf.loops) {
@@ -149,6 +163,7 @@ export function arrange(node: RegionNode): FillResult {
     node: leaf,
     curve: curveOfRaw[leafRaw[li] ?? -1] ?? -1,
     edges: [],
+    pieces: [],
   }));
   // Polygon vertices are always vertices of their edge lines.
   for (const pe of rawPolyEdges) {
@@ -156,6 +171,26 @@ export function arrange(node: RegionNode): FillResult {
     const pa = points.push({ p: pe.a, curves: [curve] }) - 1;
     const pb = points.push({ p: pe.b, curves: [curve] }) - 1;
     infos[pe.leaf]?.edges.push({ a: pe.a, b: pe.b, curve, pa, pb });
+  }
+  // A chain joint is a vertex of the merged curves of both pieces it joins.
+  for (const rc of rawChains) {
+    const leaf = leaves[rc.leaf];
+    const info = infos[rc.leaf];
+    if (leaf?.kind !== 'chain' || info === undefined) {
+      continue;
+    }
+    const pieces = leaf.pieces;
+    const n = pieces.length;
+    const curveOf = (k: number): number => curveOfRaw[rc.first + (k % n)] ?? -1;
+    const joints = pieces.map(
+      (piece, k) => points.push({ p: piece.end, curves: [curveOf(k), curveOf(k + 1)] }) - 1,
+    );
+    info.pieces = pieces.map((piece, k) => ({
+      curve: curveOf(k),
+      entry: joints[(k + n - 1) % n] ?? -1,
+      exit: joints[k] ?? -1,
+      ccw: piece.kind === 'arc' && piece.ccw,
+    }));
   }
 
   const clusterOf = clusterPoints(points.map((q) => q.p));
@@ -281,7 +316,12 @@ export function arrange(node: RegionNode): FillResult {
 }
 
 function collectLeaves(node: RegionNode, leaves: Leaf[], index: Map<RegionNode, number>): void {
-  if (node.kind === 'disc' || node.kind === 'half' || node.kind === 'poly') {
+  if (
+    node.kind === 'disc' ||
+    node.kind === 'half' ||
+    node.kind === 'poly' ||
+    node.kind === 'chain'
+  ) {
     if (!index.has(node)) {
       index.set(node, leaves.length);
       leaves.push(node);
@@ -302,6 +342,7 @@ function evaluate(
     case 'disc':
     case 'half':
     case 'poly':
+    case 'chain':
       return values[index.get(node) ?? -1] === true;
     case 'union':
       return node.children.some((c) => evaluate(c, index, values));
@@ -587,6 +628,9 @@ function leafSides(
     const inside = left ? sd > 0 : sd < 0;
     return [inside, inside];
   }
+  if (leaf.kind === 'chain') {
+    return chainSides(info, edge, curves, m, clusterOf, positions);
+  }
   const pos = positions[edge.curve];
   let through = 0;
   let carried = false;
@@ -611,6 +655,45 @@ function leafSides(
   }
   const left = rayWinding(info.edges, edge.curve, m, n);
   return [left !== 0, left + through !== 0];
+}
+
+/**
+ * Chain membership on both sides of an edge. A piece carries the edge when the edge lies between
+ * the positions of the piece's entry and exit joints on the merged curve: counter-clockwise from
+ * entry to exit for a counter-clockwise arc, from exit to entry for a clockwise one, between the
+ * two for a line. The inside is on the left of the piece's travel.
+ */
+function chainSides(
+  info: LeafInfo,
+  edge: AtomicEdge,
+  curves: readonly Curve[],
+  m: Vec,
+  clusterOf: readonly number[],
+  positions: readonly Map<number, number>[],
+): [boolean, boolean] {
+  const pos = positions[edge.curve];
+  const circle = curves[edge.curve]?.geom.kind === 'circle';
+  for (const piece of info.pieces) {
+    if (piece.curve !== edge.curve || pos === undefined) {
+      continue;
+    }
+    const ka = pos.get(clusterOf[piece.entry] ?? -1);
+    const kb = pos.get(clusterOf[piece.exit] ?? -1);
+    if (ka === undefined || kb === undefined) {
+      continue;
+    }
+    if (circle) {
+      const count = pos.size;
+      const [lo, hi] = piece.ccw ? [ka, kb] : [kb, ka];
+      if ((edge.index - lo + count) % count < (hi - lo + count) % count) {
+        return piece.ccw ? [true, false] : [false, true];
+      }
+    } else if (Math.min(ka, kb) <= edge.index && edge.index < Math.max(ka, kb)) {
+      return kb > ka ? [true, false] : [false, true];
+    }
+  }
+  const inside = contains(info.node, m);
+  return [inside, inside];
 }
 
 /** Signed crossings of the ray from `m` along `n` with polygon edges off the given curve (-1: none). */

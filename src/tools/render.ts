@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { renderPreviewPng } from '../render/png.js';
+import { compareMasks } from '../render/match.js';
+import { inkMask, renderMatchPng, renderPreviewPng, underlayHref } from '../render/png.js';
 import { renderGuidesSvg, renderSheetSvg } from '../render/sheet.js';
 import { renderFinalSvg } from '../render/svg.js';
 import type { ResolvedElement, ResolvedModel } from '../resolve/resolve.js';
@@ -20,9 +21,19 @@ import {
   specArgSchema,
   ToolFailure,
 } from './shared.js';
+import { buildUnderlay, checkUnderlayFile, type UnderlayFile, underlaySchema } from './underlay.js';
 
 const TOOL = 'gridsmith_render';
-const VIEWS = ['sheet', 'final', 'sizes', 'svg', 'sheet_svg', 'guides', 'guides_svg'] as const;
+const VIEWS = [
+  'sheet',
+  'final',
+  'sizes',
+  'svg',
+  'sheet_svg',
+  'guides',
+  'guides_svg',
+  'match',
+] as const;
 const VIEW_LIST = VIEWS.map((v) => `"${v}"`).join(', ');
 const VIEWS_ALLOWED = `an array of 1 to ${VIEWS.length} distinct values from ${VIEW_LIST}`;
 const MAX_VIOLATIONS = 50;
@@ -52,7 +63,11 @@ const viewsSchema = z
     });
   });
 
-const argsSchema = z.strictObject({ spec: specArgSchema, views: viewsSchema.optional() });
+const argsSchema = z.strictObject({
+  spec: specArgSchema,
+  views: viewsSchema.optional(),
+  underlay: underlaySchema.optional(),
+});
 
 const inputSchema = z.looseObject({
   spec: z
@@ -65,7 +80,13 @@ const inputSchema = z.looseObject({
     .unknown()
     .optional()
     .describe(
-      'Array of 1 to 7 distinct views, returned in this order after the JSON. PNG images: "sheet" (construction sheet), "final" (finished drawing, 512 px), "sizes" (mark only: 64, 32 and 16 px side by side), "guides" (finished drawing with every construction element over it, 512 px). SVG markup as text: "svg" (finished drawing), "sheet_svg" (construction sheet), "guides_svg" (guides, transparent). An SVG over 60000 characters is not returned; use gridsmith_export. Default: ["sheet", "sizes"] for a mark, ["sheet", "final"] for a figure.',
+      'Array of 1 to 8 distinct views, returned in this order after the JSON. PNG images: "sheet" (construction sheet), "final" (finished drawing, 512 px), "sizes" (mark only: 64, 32 and 16 px side by side), "guides" (finished drawing with every construction element over it, 512 px), "match" (needs underlay: overlap of the reference and the drawing, 512 px; both dark, reference only orange, drawing only blue). SVG markup as text: "svg" (finished drawing), "sheet_svg" (construction sheet), "guides_svg" (guides, transparent). An SVG over 60000 characters is not returned; use gridsmith_export. Default: ["sheet", "sizes"] for a mark, ["sheet", "final"] for a figure.',
+    ),
+  underlay: z
+    .unknown()
+    .optional()
+    .describe(
+      'Optional reference image to match: { path, box?, threshold?, invert? }. path: absolute path of a PNG or JPEG file (at most 4 MB, 8192 px a side). box: [x0, y0, x1, y1] in modules, where the shape in the image is placed (default [-R, -R, R, R]). threshold: integer 1 to 254 (default: automatic). invert: true when the shape is the lighter part. Adds "match" to the report (iou, missing, excess, offset, grid, blobs, underlay) and draws the reference on the sheet.',
     ),
 });
 
@@ -137,6 +158,16 @@ function describeElement(el: ResolvedElement): Record<string, unknown> {
       return { id: el.id, type: el.type, vertices: el.vertices.map(xy) };
     case 'repeat':
       return { id: el.id, type: el.type, of: el.of, copies: el.copyCount };
+    case 'outline':
+      return {
+        id: el.id,
+        type: el.type,
+        pieces: el.pieces.length,
+        corners: el.joints
+          .filter((j) => j.kind === 'corner')
+          .map((j) => [round4(j.at.x), round4(j.at.y), round4(j.turn)]),
+        area: round4(el.area),
+      };
   }
 }
 
@@ -195,9 +226,10 @@ type Report = {
   stats: Record<string, unknown>[];
   exportable: boolean;
   truncated: string[];
+  match?: Record<string, unknown>;
 };
 
-// Drops geometry from the tail, then hints, then violations beyond the first 50.
+// Drops geometry from the tail, then hints, then violations beyond the first 50; match stays.
 function fitReport(report: Report): Report {
   const size = (r: Report): number => JSON.stringify(r).length;
   if (size(report) <= RESPONSE_MAX_CHARS) {
@@ -248,6 +280,8 @@ export function registerRender(server: McpServer): void {
     (args) =>
       guarded(TOOL, async () => {
         const parsed = parseArgs(TOOL, args, argsSchema);
+        const underlayFile: UnderlayFile | undefined =
+          parsed.underlay === undefined ? undefined : await checkUnderlayFile(parsed.underlay.path);
         const loaded = await loadSpec(TOOL, parsed.spec);
         let views: RenderView[] = [];
         const ev = evaluate(TOOL, loaded.raw, (spec) => {
@@ -258,7 +292,17 @@ export function registerRender(server: McpServer): void {
               `${TOOL}: views[${at}]: view is not available for a figure (received: "sizes"; allowed: "sheet" or "final" when mode is "figure")`,
             ]);
           }
+          const matchAt = views.indexOf('match');
+          if (matchAt >= 0 && parsed.underlay === undefined) {
+            throw new ToolFailure([
+              `${TOOL}: views[${matchAt}]: view needs an underlay (received: "match" without underlay; allowed: "match" only together with the underlay argument)`,
+            ]);
+          }
         });
+        const overlay =
+          parsed.underlay === undefined || underlayFile === undefined
+            ? undefined
+            : buildUnderlay(underlayFile, parsed.underlay, ev.model.canvasHalf, ev.model.R);
 
         const svgs = {
           final: renderFinalSvg(ev.model, ev.fills),
@@ -269,8 +313,15 @@ export function registerRender(server: McpServer): void {
             fills: ev.fills,
             violations: ev.violations,
             exceptionsApplied: ev.exceptionsApplied,
+            ...(overlay === undefined
+              ? {}
+              : { underlay: { href: underlayHref(overlay.reference) } }),
           }),
         };
+        const ink =
+          overlay === undefined
+            ? undefined
+            : rasterize(TOOL, 'the drawing mask', () => inkMask(svgs.final));
         const svgText: Record<SvgView, string> = {
           svg: svgs.final,
           sheet_svg: svgs.sheet.svg,
@@ -286,6 +337,13 @@ export function registerRender(server: McpServer): void {
             } else {
               blocks.push({ type: 'text', text });
             }
+            continue;
+          }
+          if (view === 'match' && overlay !== undefined && ink !== undefined) {
+            const png = rasterize(TOOL, 'the match view', () =>
+              renderMatchPng(overlay.reference, ink),
+            );
+            blocks.push(pngImage(png));
             continue;
           }
           const preview = rasterize(TOOL, `the ${view} view`, () => renderPreviewPng(view, svgs));
@@ -304,6 +362,14 @@ export function registerRender(server: McpServer): void {
           stats: statsOf(ev),
           exportable: ev.exportable,
           truncated,
+          ...(overlay === undefined || ink === undefined
+            ? {}
+            : {
+                match: {
+                  ...compareMasks(overlay.reference, ink, ev.model.canvasHalf),
+                  underlay: overlay.report,
+                },
+              }),
         });
         return { content: [jsonText(report), ...blocks] };
       }),

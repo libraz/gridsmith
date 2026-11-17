@@ -1,4 +1,5 @@
 import type { FillResult } from '../geom/arrangement.js';
+import type { ChainPiece } from '../geom/chain.js';
 import type { Circle, Line, Vec } from '../geom/primitives.js';
 import { centerOf, distance, EPS, pointOnCircle, signedDistance } from '../geom/primitives.js';
 import type { ArcGeometry, ResolvedModel } from '../resolve/resolve.js';
@@ -29,9 +30,10 @@ export const RULES = {
   circle_count: {
     description:
       'At most 8 circles (circle and tangent_circle) in a mark and 16 in a figure, counted as declared, ' +
-      'before repeat expansion; arcs are not circles. Target: "spec".',
+      'before repeat expansion; arcs are not circles. A mark with an outline that a fill reaches may have 40. ' +
+      'Target: "spec".',
     modes: ['mark', 'figure'],
-    maxCircles: { mark: 8, figure: 16 },
+    maxCircles: { mark: 8, mark_outline: 40, figure: 16 },
   },
   off_grid: {
     description:
@@ -54,7 +56,7 @@ export const RULES = {
   off_canvas: {
     description:
       'Everything drawn must stay inside the square canvas of half side R + margin. A figure stroke counts ' +
-      'half its width beyond the geometry (an arc by its own bounding box); a mark counts the bounding box of the filled region. ' +
+      'half its width beyond the geometry (an arc or outline by its own bounding box); a mark counts the bounding box of the filled region. ' +
       'Target: the element id (figure) or "paint[i]" (mark).',
     modes: ['mark', 'figure'],
     tolerance: 1e-9,
@@ -142,6 +144,12 @@ function pointSlots(shape: Shape): { label: string; point: Point }[] {
       return shape.through.map((point, k) => ({ label: `through[${k}]`, point }));
     case 'repeat':
       return [{ label: 'center', point: shape.center }];
+    case 'outline':
+      return shape.through.flatMap((piece, k) =>
+        typeof piece === 'string' || piece.corner === undefined
+          ? []
+          : [{ label: `through[${k}] corner`, point: piece.corner }],
+      );
     case 'polygon':
       return [];
   }
@@ -178,16 +186,39 @@ function checkRatioCount(spec: Spec): Finding[] {
   ];
 }
 
+// Ids reachable from a paint layer through references.
+function reachableIds(spec: Spec): Set<string> {
+  const byId = new Map(spec.shapes.map((shape) => [shape.id, shape]));
+  const reached = new Set<string>();
+  const pending = spec.paint.flatMap(paintReferences);
+  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+    if (reached.has(id)) {
+      continue;
+    }
+    reached.add(id);
+    const shape = byId.get(id);
+    if (shape !== undefined) {
+      pending.push(...shapeReferences(shape));
+    }
+  }
+  return reached;
+}
+
 function checkCircleCount(spec: Spec): Finding[] {
   const count = spec.shapes.filter(isCircleLike).length;
-  const max = RULES.circle_count.maxCircles[spec.mode];
+  const { maxCircles } = RULES.circle_count;
+  const reached = spec.mode === 'mark' ? reachableIds(spec) : null;
+  const withOutline =
+    reached !== null &&
+    spec.shapes.some((shape) => shape.type === 'outline' && reached.has(shape.id));
+  const max = withOutline ? maxCircles.mark_outline : maxCircles[spec.mode];
   if (count <= max) {
     return [];
   }
   return [
     {
       target: RESERVED_ID,
-      message: `${count} circles declared, at most ${max} allowed in ${spec.mode}`,
+      message: `${count} circles declared, at most ${max} allowed in ${spec.mode}${withOutline ? ' with an outline' : ''}`,
     },
   ];
 }
@@ -203,8 +234,9 @@ function checkOffGrid(spec: Spec): Finding[] {
         problems.push(`${label} ${fmt(value)} is not a multiple of ${step}`);
       }
     };
-    // A tangent circle's only point is `near`, which is exempt.
-    const slots = shape.type === 'tangent_circle' ? [] : pointSlots(shape);
+    // The only points of a tangent circle and an outline are hints (`near`, `corner`): exempt.
+    const hintOnly = shape.type === 'tangent_circle' || shape.type === 'outline';
+    const slots = hintOnly ? [] : pointSlots(shape);
     for (const { label, point } of slots) {
       const xy = literalCoordinates(point);
       if (xy !== null) {
@@ -282,6 +314,24 @@ function arcReach(arc: ArcGeometry): number {
   return Math.max(...points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y))));
 }
 
+// Bounding-box extent of a chain: its joints plus each axis extreme inside an arc's range.
+function chainReach(pieces: readonly ChainPiece[]): number {
+  const points: Vec[] = [];
+  for (const piece of pieces) {
+    points.push(piece.start);
+    if (piece.kind === 'arc') {
+      for (let k = 0; k < 4; k++) {
+        const offset = ((k * Math.PI) / 2 - piece.from) * (piece.ccw ? 1 : -1);
+        const wrapped = ((offset % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+        if (wrapped <= piece.sweep) {
+          points.push(pointOnCircle(piece.circle, k * 90));
+        }
+      }
+    }
+  }
+  return Math.max(...points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y))));
+}
+
 // Largest distance from the origin along either axis, the canvas being a square about it.
 function strokeReach(item: ResolvedModel['strokes'][number]['items'][number]): number {
   switch (item.kind) {
@@ -298,6 +348,8 @@ function strokeReach(item: ResolvedModel['strokes'][number]['items'][number]): n
       );
     case 'polygon':
       return Math.max(...item.loops.flat().map((v) => Math.max(Math.abs(v.x), Math.abs(v.y))));
+    case 'chain':
+      return chainReach(item.pieces);
   }
 }
 
@@ -369,19 +421,7 @@ function checkThinStroke(model: ResolvedModel): Finding[] {
 }
 
 function checkUnusedShape(spec: Spec): Finding[] {
-  const byId = new Map(spec.shapes.map((shape) => [shape.id, shape]));
-  const reached = new Set<string>();
-  const pending = spec.paint.flatMap(paintReferences);
-  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
-    if (reached.has(id)) {
-      continue;
-    }
-    reached.add(id);
-    const shape = byId.get(id);
-    if (shape !== undefined) {
-      pending.push(...shapeReferences(shape));
-    }
-  }
+  const reached = reachableIds(spec);
   return spec.shapes
     .filter((shape) => !reached.has(shape.id))
     .map((shape) => ({

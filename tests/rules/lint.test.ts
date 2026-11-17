@@ -767,3 +767,140 @@ describe('erase layers', () => {
     expect(rulesOf(input)).toEqual([]);
   });
 });
+
+describe('outline cap and outline rules', () => {
+  const lens = (): Json[] => [circle('a', 5, [-3, 0]), circle('b', 5, [3, 0])];
+  const lensThrough = (): unknown[] => [
+    { on: 'a', corner: [0, 4] },
+    { on: 'b', corner: [0, -4] },
+  ];
+  const outline = (through: unknown[] = lensThrough()): Json => ({
+    id: 'o',
+    type: 'outline',
+    through,
+  });
+  // Circles on the grid that take no part in the outline.
+  const spares = (count: number): Json[] =>
+    Array.from({ length: count }, (_, k) =>
+      circle(`s${k}`, 0.5, [-8 + (k % 16), -8 + Math.floor(k / 16)]),
+    );
+  const markWith = (count: number, fill: unknown = 'o', extra: Json[] = []): SpecInput =>
+    mark([...lens(), ...spares(count - 2), outline(), ...extra], fill, {}, 8);
+  const circleCount = (input: SpecInput) =>
+    run(input).violations.find((v) => v.rule === 'circle_count');
+
+  it('keeps 8 circles as the cap of a mark without an outline', () => {
+    const eight = concentric(8, 1, 0.5);
+    const nine = concentric(9, 1, 0.5);
+    expect(has(mark(eight, { union: ids(eight) }, {}, 8), 'circle_count')).toBe(false);
+    expect(circleCount(mark(nine, { union: ids(nine) }, {}, 8))?.message).toBe(
+      '9 circles declared, at most 8 allowed in mark',
+    );
+  });
+
+  it('allows 40 circles in a mark whose fill reaches an outline and rejects 41', () => {
+    expect(has(markWith(40), 'circle_count')).toBe(false);
+    expect(circleCount(markWith(41))?.message).toBe(
+      '41 circles declared, at most 40 allowed in mark with an outline',
+    );
+  });
+
+  it('reaches the outline through a repeat and through a region tree', () => {
+    const rep = { id: 'rep', type: 'repeat', of: ['o'], n: 2 };
+    expect(has(markWith(41, 'rep', [rep]), 'circle_count')).toBe(true);
+    expect(has(markWith(40, 'rep', [rep]), 'circle_count')).toBe(false);
+    expect(has(markWith(40, { union: ['o', 's0'] }), 'circle_count')).toBe(false);
+    expect(has(markWith(41, { union: ['o', 's0'] }), 'circle_count')).toBe(true);
+  });
+
+  it('keeps cap 8 when the outline is declared but no fill reaches it', () => {
+    const input = mark([...lens(), ...spares(7), outline()], 'a', {}, 8);
+    expect(input.shapes.filter((s) => s.type !== 'outline')).toHaveLength(9);
+    expect(circleCount(input)?.message).toBe('9 circles declared, at most 8 allowed in mark');
+    expect(has(input, 'unused_shape', 'o')).toBe(true);
+  });
+
+  it('keeps cap 16 for a figure with an outline', () => {
+    const figureWith = (count: number): SpecInput =>
+      figure([...lens(), ...spares(count - 2), outline()], [stroke(['o'])], {}, 8);
+    expect(has(figureWith(16), 'circle_count')).toBe(false);
+    expect(circleCount(figureWith(17))?.message).toBe(
+      '17 circles declared, at most 16 allowed in figure',
+    );
+  });
+
+  it('lists the cap thresholds', () => {
+    expect(RULES.circle_count.maxCircles).toEqual({ mark: 8, mark_outline: 40, figure: 16 });
+  });
+
+  it('exempts a corner from off_grid', () => {
+    const input = mark(
+      [
+        ...lens(),
+        outline([
+          { on: 'a', corner: [0.123, 3.77] },
+          { on: 'b', corner: [0.1, -3.9] },
+        ]),
+      ],
+      'o',
+      {},
+      8,
+    );
+    expect(has(input, 'off_grid')).toBe(false);
+  });
+
+  it('checks the angle of an { on, angle } corner', () => {
+    const withAngle = (angle: number): SpecInput =>
+      mark(
+        [
+          ...lens(),
+          outline([
+            { on: 'a', corner: { on: 'a', angle } },
+            { on: 'b', corner: [0, -4] },
+          ]),
+        ],
+        'o',
+        {},
+        8,
+      );
+    expect(has(withAngle(7), 'angle', 'o')).toBe(true);
+    expect(has(withAngle(45), 'angle')).toBe(false);
+  });
+
+  describe('figure reach', () => {
+    // A segment of a radius-5 circle right of x = 3: joints reach 4, the arc reaches 5.
+    const segment = (width: number): SpecInput =>
+      figure(
+        [
+          circle('a', 5, [0, 0]),
+          { id: 'ln', type: 'line', from: [3, 4], to: [3, -4] },
+          outline([
+            { on: 'a', corner: [3, 4] },
+            { on: 'ln', corner: [3, -4] },
+          ]),
+        ],
+        [stroke(['o'], width)],
+        {},
+        4,
+      );
+
+    it('counts the axis extreme of an arc plus half the stroke width', () => {
+      expect(has(segment(0.125), 'off_canvas', 'o')).toBe(true);
+      expect(has(segment(0.125), 'off_canvas', 'a')).toBe(false);
+    });
+
+    it('does not report an outline that fits', () => {
+      const fits = figure([...lens(), outline()], [stroke(['o'], 0.125)], {}, 4);
+      expect(has(fits, 'off_canvas')).toBe(false);
+      const wide = figure([...lens(), outline()], [stroke(['o'], 2.5)], {}, 4);
+      expect(has(wide, 'off_canvas', 'o')).toBe(true);
+    });
+  });
+
+  it('reports neither empty_fill nor off_canvas for a filled outline', () => {
+    const input = mark([...lens(), outline()], 'o', {}, 8);
+    expect(has(input, 'empty_fill')).toBe(false);
+    expect(has(input, 'off_canvas')).toBe(false);
+    expect(has(input, 'unused_shape')).toBe(false);
+  });
+});

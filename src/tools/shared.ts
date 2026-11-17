@@ -244,6 +244,24 @@ const capInputLines = (lines: string[]): string[] =>
     ? [...lines.slice(0, MAX_INPUT_ERRORS), `… and ${lines.length - MAX_INPUT_ERRORS} more`]
     : lines;
 
+/** Keys of the strict object found at `path` inside `schema`, looking through optional wrappers. */
+function schemaKeysAt(schema: z.ZodObject, path: Path): string[] {
+  let node: unknown = schema;
+  for (const seg of [...path, undefined]) {
+    while (node instanceof z.ZodOptional) {
+      node = node.unwrap();
+    }
+    if (!(node instanceof z.ZodObject)) {
+      return [];
+    }
+    if (seg === undefined) {
+      return Object.keys(node.shape);
+    }
+    node = (node.shape as Record<string, unknown>)[String(seg)];
+  }
+  return [];
+}
+
 /** Validates a tool's raw arguments against its strict schema, rejecting unknown keys. */
 export function parseArgs<S extends z.ZodObject>(
   tool: ToolName,
@@ -260,8 +278,9 @@ export function parseArgs<S extends z.ZodObject>(
   if (result.success) {
     return result.data;
   }
-  const keys = Object.keys(schema.shape);
-  throw new ToolFailure(capInputLines(issueLines(tool, [], result.error.issues, () => keys)));
+  throw new ToolFailure(
+    capInputLines(issueLines(tool, [], result.error.issues, (path) => schemaKeysAt(schema, path))),
+  );
 }
 
 /** The `spec` argument: an object, or the absolute path of a JSON file holding one. */

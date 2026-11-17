@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { FillResult } from '../../src/geom/arrangement.js';
 import { arrange } from '../../src/geom/arrangement.js';
 import type { Circle, Vec } from '../../src/geom/primitives.js';
+import { renderExportPng } from '../../src/render/png.js';
 import { renderFinalSvg } from '../../src/render/svg.js';
 import type { ResolvedModel } from '../../src/resolve/resolve.js';
 import { resolveSpec } from '../../src/resolve/resolve.js';
 import type { SpecInput } from '../../src/spec/schema.js';
 import { specSchema } from '../../src/spec/schema.js';
+import { readPng } from '../helpers/png.js';
 
 type Built = { model: ResolvedModel; fills: FillResult[]; svg: string };
 
@@ -171,6 +173,58 @@ const supportsOf = (model: ResolvedModel): Support[] => {
   return out;
 };
 
+/** Checks every `A` and `L` of the paths against the declared circles and lines; returns the edge count. */
+const checkDerived = (paths: string[], circles: Circle[], supports: Support[]): number => {
+  let edges = 0;
+  for (const d of paths) {
+    let cur: Vec | undefined;
+    for (const { cmd, args } of parsePath(d)) {
+      expect('MLAZ').toContain(cmd);
+      if (cmd === 'Z') {
+        continue;
+      }
+      const end: Vec = {
+        x: args[args.length - 2] ?? Number.NaN,
+        y: -(args[args.length - 1] ?? Number.NaN),
+      };
+      if (cmd === 'L' && cur !== undefined) {
+        edges++;
+        const from = cur;
+        const onSupport = supports.some(
+          (s) =>
+            Math.abs(s.d.x * (from.y - s.p.y) - s.d.y * (from.x - s.p.x)) <= 1e-5 &&
+            Math.abs(s.d.x * (end.y - s.p.y) - s.d.y * (end.x - s.p.x)) <= 1e-5,
+        );
+        expect(onSupport).toBe(true);
+      } else if (cmd === 'A' && cur !== undefined) {
+        edges++;
+        const [rx, ry, , large] = args;
+        expect(rx).toBe(ry);
+        expect(large).toBe(0);
+        const from = cur;
+        const host = circles.find(
+          (c) =>
+            Math.abs(c.r - (rx ?? 0)) <= 1e-6 &&
+            Math.abs(Math.hypot(from.x - c.cx, from.y - c.cy) - c.r) <= 1e-5 &&
+            Math.abs(Math.hypot(end.x - c.cx, end.y - c.cy) - c.r) <= 1e-5,
+        );
+        expect(host).toBeDefined();
+        if (host !== undefined) {
+          const a0 = Math.atan2(from.y - host.cy, from.x - host.cx);
+          const a1 = Math.atan2(end.y - host.cy, end.x - host.cx);
+          let delta = Math.abs(a1 - a0);
+          delta = Math.min(delta, 2 * Math.PI - delta);
+          expect((delta * 180) / Math.PI).toBeLessThanOrEqual(120 + 1e-3);
+        }
+      } else {
+        expect(cmd).toBe('M');
+      }
+      cur = end;
+    }
+  }
+  return edges;
+};
+
 describe('final mark svg', () => {
   for (const [name, input] of configs) {
     it(`derives every edge from a declared curve: ${name}`, () => {
@@ -180,53 +234,7 @@ describe('final mark svg', () => {
       const paths = pathsOf(svg);
       expect(paths.length).toBeGreaterThan(0);
 
-      let edges = 0;
-      for (const d of paths) {
-        let cur: Vec | undefined;
-        for (const { cmd, args } of parsePath(d)) {
-          expect('MLAZ').toContain(cmd);
-          if (cmd === 'Z') {
-            continue;
-          }
-          const end: Vec = {
-            x: args[args.length - 2] ?? Number.NaN,
-            y: -(args[args.length - 1] ?? Number.NaN),
-          };
-          if (cmd === 'L' && cur !== undefined) {
-            edges++;
-            const from = cur;
-            const onSupport = supports.some(
-              (s) =>
-                Math.abs(s.d.x * (from.y - s.p.y) - s.d.y * (from.x - s.p.x)) <= 1e-5 &&
-                Math.abs(s.d.x * (end.y - s.p.y) - s.d.y * (end.x - s.p.x)) <= 1e-5,
-            );
-            expect(onSupport).toBe(true);
-          } else if (cmd === 'A' && cur !== undefined) {
-            edges++;
-            const [rx, ry, , large] = args;
-            expect(rx).toBe(ry);
-            expect(large).toBe(0);
-            const from = cur;
-            const host = circles.find(
-              (c) =>
-                Math.abs(c.r - (rx ?? 0)) <= 1e-6 &&
-                Math.abs(Math.hypot(from.x - c.cx, from.y - c.cy) - c.r) <= 1e-5 &&
-                Math.abs(Math.hypot(end.x - c.cx, end.y - c.cy) - c.r) <= 1e-5,
-            );
-            expect(host).toBeDefined();
-            if (host !== undefined) {
-              const a0 = Math.atan2(from.y - host.cy, from.x - host.cx);
-              const a1 = Math.atan2(end.y - host.cy, end.x - host.cx);
-              let delta = Math.abs(a1 - a0);
-              delta = Math.min(delta, 2 * Math.PI - delta);
-              expect((delta * 180) / Math.PI).toBeLessThanOrEqual(120 + 1e-3);
-            }
-          } else {
-            expect(cmd).toBe('M');
-          }
-          cur = end;
-        }
-      }
+      const edges = checkDerived(paths, circles, supports);
       expect(edges).toBeGreaterThan(0);
     });
   }
@@ -444,5 +452,142 @@ describe('final figure svg erase layers', () => {
   it('keeps the background transparent', () => {
     const { svg } = build(layered([{ stroke: ['ring'], width: 0.125 }, { erase: ['disc'] }]));
     expect(svg).not.toMatch(/<rect[^>]*fill="#(?!ffffff)/);
+  });
+});
+
+const whaleShapes = [
+  { id: 'head', type: 'circle', center: [-5, -1], r: 3 },
+  { id: 'belly', type: 'circle', center: [-1, 4], r: 9 },
+  { id: 'bay_l', type: 'circle', center: [1, 2], r: 2 },
+  { id: 'bay_r', type: 'circle', center: [7, 2], r: 2 },
+  { id: 'rump', type: 'tangent_circle', r: 2, to: ['belly', 'bay_r'], near: [3.5, -0.5] },
+  { id: 'back', type: 'tangent_circle', r: 7, to: ['head', 'bay_l'], near: [-3.3, -4.6] },
+  { id: 'fluke_l', type: 'circle', center: [2.5, 2.5], r: 3 },
+  { id: 'fluke_r', type: 'circle', center: [5.5, 2.5], r: 3 },
+  { id: 'eye', type: 'circle', center: [-5.5, 0], r: 0.5 },
+  {
+    id: 'whale',
+    type: 'outline',
+    through: [
+      'belly',
+      'rump',
+      { on: 'bay_r', concave: true, corner: [8, 3.6] },
+      { on: 'fluke_r', corner: [4.3, 5.2] },
+      { on: 'fluke_l', corner: [0, 3.6] },
+      { on: 'bay_l', concave: true },
+      'back',
+      { on: 'head', corner: [-7.5, -3] },
+    ],
+  },
+];
+
+const stadiumShapes = [
+  { id: 'a', type: 'circle', center: [-1.5, 0], r: 1.5 },
+  { id: 'b', type: 'circle', center: [1.5, 0], r: 1.5 },
+  { id: 'top', type: 'line', from: [1.5, 1.5], to: [-1.5, 1.5] },
+  { id: 'bottom', type: 'line', from: [-1.5, -1.5], to: [1.5, -1.5] },
+  { id: 'stadium', type: 'outline', through: ['b', 'top', 'a', 'bottom'] },
+];
+
+const lensShapes = [
+  { id: 'a', type: 'circle', center: [2.5, 0], r: 1.5 },
+  { id: 'b', type: 'circle', center: [3.5, 0], r: 1.5 },
+  {
+    id: 'lens',
+    type: 'outline',
+    through: [
+      { on: 'a', corner: [3, 1.4] },
+      { on: 'b', corner: [3, -1.4] },
+    ],
+  },
+];
+
+const rotated = (c: Circle, deg: number): Circle => {
+  const t = (deg * Math.PI) / 180;
+  return {
+    cx: c.cx * Math.cos(t) - c.cy * Math.sin(t),
+    cy: c.cx * Math.sin(t) + c.cy * Math.cos(t),
+    r: c.r,
+  };
+};
+
+describe('final svg outline element', () => {
+  it('derives every edge of a mark with an outline from a declared circle', () => {
+    const { model, svg } = build(mark(whaleShapes, { subtract: ['whale', 'eye'] }, 8));
+    const edges = checkDerived(pathsOf(svg), circlesOf(model), supportsOf(model));
+    expect(edges).toBeGreaterThan(8);
+  });
+
+  it('derives every edge of an outline with straight pieces from declared circles and lines', () => {
+    const { model, svg } = build(mark(stadiumShapes, 'stadium'));
+    const edges = checkDerived(pathsOf(svg), circlesOf(model), supportsOf(model));
+    expect(edges).toBeGreaterThan(4);
+    expect(parsePath(pathsOf(svg).join(' ')).filter((c) => c.cmd === 'L').length).toBe(2);
+  });
+
+  it('derives every edge of a repeated outline from declared circles mapped by the repeat', () => {
+    const shapes = [
+      ...lensShapes,
+      { id: 'ring', type: 'repeat', of: ['lens'], n: 3, mirror: true },
+    ];
+    const { model, svg } = build(mark(shapes, 'ring'));
+    const declared = circlesOf(model);
+    const mirroredCircle = (c: Circle): Circle => ({ cx: -c.cx, cy: c.cy, r: c.r });
+    const allowed = declared.flatMap((c) =>
+      [0, 120, 240].flatMap((deg) => [rotated(c, deg), rotated(mirroredCircle(c), deg)]),
+    );
+    const repeat = model.byId.get('ring');
+    expect(repeat?.type === 'repeat' ? repeat.copies.length : 0).toBe(5);
+    const edges = checkDerived(pathsOf(svg), allowed, supportsOf(model));
+    expect(edges).toBeGreaterThan(12);
+  });
+
+  it('strokes an outline in a figure with M, A, L and Z only', () => {
+    const { svg } = build(figureOf(stadiumShapes, [{ stroke: ['stadium'], width: 0.25 }]));
+    const paths = pathsOf(svg);
+    expect(paths).toHaveLength(1);
+    const commands = parsePath(paths.join(' '));
+    expect(new Set(commands.map((c) => c.cmd))).toEqual(new Set(['M', 'A', 'L', 'Z']));
+    expect(commands.filter((c) => c.cmd === 'M')).toHaveLength(1);
+    expect(commands[commands.length - 1]?.cmd).toBe('Z');
+    expect(svg).not.toContain('<polygon');
+    expect(paths[0]).not.toMatch(/[CQSTHV]/);
+  });
+
+  it('keeps every arc of a stroked outline on a declared circle within 120 degrees', () => {
+    const { model, svg } = build(
+      figureOf(
+        whaleShapes.filter((s) => s.id !== 'eye'),
+        [{ stroke: ['whale'], width: 0.25 }],
+      ),
+    );
+    const paths = pathsOf(svg);
+    expect(paths).toHaveLength(1);
+    expect(checkDerived(paths, circlesOf(model), supportsOf(model))).toBeGreaterThan(8);
+  });
+
+  it('erases the earlier strokes inside an outline and keeps those outside', () => {
+    const input = figureOf(
+      [
+        ...stadiumShapes,
+        { id: 'bar', type: 'line', from: [-4.5, 0], to: [4.5, 0] },
+        { id: 'post', type: 'line', from: [0, -4.5], to: [0, 4.5] },
+      ],
+      [{ stroke: ['bar', 'post'], width: 0.5 }, { erase: ['stadium'] }],
+    );
+    const { model, svg } = build(input);
+    expect(svg).toMatch(/<mask [^>]*>[\s\S]*<path d="[^"]*" fill="#000000"\/>[\s\S]*<\/mask>/);
+    const img = readPng(renderExportPng(svg, 512));
+    const k = 512 / (2 * model.canvasHalf);
+    const alphaAt = (x: number, y: number) =>
+      img.rgba[(Math.round(256 - y * k) * 512 + Math.round(256 + x * k)) * 4 + 3];
+    // The bar crosses the outline at its centre and through both round ends.
+    expect(alphaAt(0, 0)).toBe(0);
+    expect(alphaAt(-2.5, 0)).toBe(0);
+    expect(alphaAt(2.5, 0)).toBe(0);
+    expect(alphaAt(0, 1.2)).toBe(0);
+    // Outside the outline the strokes stay.
+    expect(alphaAt(3.8, 0)).toBe(255);
+    expect(alphaAt(0, 3.8)).toBe(255);
   });
 });
