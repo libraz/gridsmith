@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "mode": "mark",
+  "grid": {
+    "divisions": 4
+  },
+  "concept": "A ring from two concentric discs, opened by the wedge between two lines at plus and minus 30 degrees, around a centre dot.",
+  "shapes": [
+    {
+      "id": "outer",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "inner",
+      "type": "circle",
+      "r": 3
+    },
+    {
+      "id": "core",
+      "type": "circle",
+      "r": 1
+    },
+    {
+      "id": "edge_up",
+      "type": "line",
+      "from": [
+        0,
+        0
+      ],
+      "to": {
+        "on": "outer",
+        "angle": 30
+      }
+    },
+    {
+      "id": "edge_down",
+      "type": "line",
+      "from": [
+        0,
+        0
+      ],
+      "to": {
+        "on": "outer",
+        "angle": -30
+      }
+    }
+  ],
+  "paint": [
+    {
+      "fill": {
+        "union": [
+          {
+            "subtract": [
+              "outer",
+              "inner",
+              {
+                "intersect": [
+                  {
+                    "half": "edge_up",
+                    "toward": [
+                      4,
+                      0
+                    ]
+                  },
+                  {
+                    "half": "edge_down",
+                    "toward": [
+                      4,
+                      0
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "core"
+        ]
+      }
+    }
+  ]
+}

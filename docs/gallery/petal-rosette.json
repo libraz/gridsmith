@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "frame",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "left",
+      "type": "circle",
+      "center": [
+        2,
+        1.5
+      ],
+      "r": 2.5
+    },
+    {
+      "id": "right",
+      "type": "circle",
+      "center": [
+        2,
+        -1.5
+      ],
+      "r": 2.5
+    },
+    {
+      "id": "base",
+      "type": "point",
+      "at": {
+        "intersect": [
+          "left",
+          "right"
+        ],
+        "near": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "id": "tip",
+      "type": "point",
+      "at": {
+        "intersect": [
+          "left",
+          "right"
+        ],
+        "near": [
+          4,
+          0
+        ]
+      }
+    },
+    {
+      "id": "lower",
+      "type": "arc",
+      "on": "left",
+      "from": "base",
+      "to": "tip"
+    },
+    {
+      "id": "upper",
+      "type": "arc",
+      "on": "right",
+      "from": "tip",
+      "to": "base"
+    },
+    {
+      "id": "petals",
+      "type": "repeat",
+      "of": [
+        "lower",
+        "upper"
+      ],
+      "n": 8
+    },
+    {
+      "id": "hub",
+      "type": "circle",
+      "r": 1
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "frame",
+        "hub"
+      ],
+      "width": 0.09375
+    },
+    {
+      "stroke": [
+        "petals"
+      ],
+      "width": 0.125
+    }
+  ]
+}

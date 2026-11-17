@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "moon",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "bite",
+      "type": "circle",
+      "center": [
+        1.5,
+        0
+      ],
+      "r": 3.5
+    },
+    {
+      "id": "horn_top",
+      "type": "point",
+      "at": {
+        "intersect": [
+          "moon",
+          "bite"
+        ],
+        "near": [
+          2,
+          3
+        ]
+      }
+    },
+    {
+      "id": "horn_low",
+      "type": "point",
+      "at": {
+        "intersect": [
+          "moon",
+          "bite"
+        ],
+        "near": [
+          2,
+          -3
+        ]
+      }
+    },
+    {
+      "id": "outer_edge",
+      "type": "arc",
+      "on": "moon",
+      "from": "horn_top",
+      "to": "horn_low"
+    },
+    {
+      "id": "inner_edge",
+      "type": "arc",
+      "on": "bite",
+      "from": "horn_top",
+      "to": "horn_low"
+    },
+    {
+      "id": "planet",
+      "type": "circle",
+      "center": [
+        2.25,
+        0
+      ],
+      "r": 0.75
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "outer_edge",
+        "inner_edge",
+        "planet"
+      ],
+      "width": 0.15625
+    }
+  ]
+}

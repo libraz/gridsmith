@@ -17,7 +17,8 @@
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
     "check": "yarn lint && yarn typecheck",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gallery": "yarn build && node scripts/gallery.js"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",

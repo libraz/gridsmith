@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "mode": "mark",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "upper",
+      "type": "circle",
+      "center": [
+        0,
+        -2.5
+      ],
+      "r": "R"
+    },
+    {
+      "id": "lower",
+      "type": "circle",
+      "center": [
+        0,
+        2.5
+      ],
+      "r": "R"
+    },
+    {
+      "id": "iris",
+      "type": "circle",
+      "r": 1
+    },
+    {
+      "id": "pupil",
+      "type": "circle",
+      "r": 0.5
+    }
+  ],
+  "paint": [
+    {
+      "fill": {
+        "union": [
+          {
+            "subtract": [
+              {
+                "intersect": [
+                  "upper",
+                  "lower"
+                ]
+              },
+              "iris"
+            ]
+          },
+          "pupil"
+        ]
+      }
+    }
+  ]
+}

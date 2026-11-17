@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "outer",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "band",
+      "type": "circle",
+      "r": 3.5
+    },
+    {
+      "id": "inner",
+      "type": "circle",
+      "r": 3
+    },
+    {
+      "id": "core",
+      "type": "circle",
+      "r": "R/2"
+    },
+    {
+      "id": "star",
+      "type": "polygon",
+      "in": "inner",
+      "n": 6,
+      "step": 2,
+      "rotate": 90
+    },
+    {
+      "id": "dot",
+      "type": "circle",
+      "center": {
+        "on": "band",
+        "angle": 0
+      },
+      "r": 0.25
+    },
+    {
+      "id": "dots",
+      "type": "repeat",
+      "of": [
+        "dot"
+      ],
+      "n": 12
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "outer",
+        "inner",
+        "core",
+        "star",
+        "dots"
+      ],
+      "width": 0.125
+    }
+  ]
+}

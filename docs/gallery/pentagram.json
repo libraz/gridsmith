@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "outer",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "ring",
+      "type": "circle",
+      "r": 3.5
+    },
+    {
+      "id": "core",
+      "type": "circle",
+      "r": "ring.r/phi2"
+    },
+    {
+      "id": "frame",
+      "type": "polygon",
+      "in": "outer",
+      "n": 5,
+      "rotate": 90
+    },
+    {
+      "id": "star",
+      "type": "polygon",
+      "in": "ring",
+      "n": 5,
+      "step": 2,
+      "rotate": 90
+    },
+    {
+      "id": "inner",
+      "type": "polygon",
+      "in": "core",
+      "n": 5,
+      "rotate": 270
+    },
+    {
+      "id": "dot",
+      "type": "circle",
+      "center": {
+        "on": "ring",
+        "angle": 90
+      },
+      "r": 0.25
+    },
+    {
+      "id": "dots",
+      "type": "repeat",
+      "of": [
+        "dot"
+      ],
+      "n": 5
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "outer",
+        "frame",
+        "ring",
+        "star",
+        "core",
+        "inner",
+        "dots"
+      ],
+      "width": 0.125
+    }
+  ]
+}

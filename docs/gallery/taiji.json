@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "mode": "mark",
+  "grid": {
+    "divisions": 4
+  },
+  "concept": "Two circles of radius R/2 touch the disc and the horizontal axis; the right half of the disc plus the upper circle minus the lower one makes the S.",
+  "shapes": [
+    {
+      "id": "disc",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "vertical",
+      "type": "line",
+      "from": [
+        0,
+        -4
+      ],
+      "to": [
+        0,
+        4
+      ]
+    },
+    {
+      "id": "horizontal",
+      "type": "line",
+      "from": [
+        -4,
+        0
+      ],
+      "to": [
+        4,
+        0
+      ]
+    },
+    {
+      "id": "upper",
+      "type": "tangent_circle",
+      "r": "R/2",
+      "to": [
+        "disc",
+        "horizontal"
+      ],
+      "near": [
+        0,
+        2
+      ]
+    },
+    {
+      "id": "lower",
+      "type": "tangent_circle",
+      "r": "R/2",
+      "to": [
+        "disc",
+        "horizontal"
+      ],
+      "near": [
+        0,
+        -2
+      ]
+    },
+    {
+      "id": "upper_dot",
+      "type": "circle",
+      "center": "upper",
+      "r": 0.5
+    },
+    {
+      "id": "lower_dot",
+      "type": "circle",
+      "center": "lower",
+      "r": 0.5
+    }
+  ],
+  "paint": [
+    {
+      "fill": {
+        "union": [
+          {
+            "subtract": [
+              {
+                "union": [
+                  {
+                    "intersect": [
+                      "disc",
+                      {
+                        "half": "vertical",
+                        "toward": [
+                          1,
+                          0
+                        ]
+                      }
+                    ]
+                  },
+                  "upper"
+                ]
+              },
+              "lower",
+              "upper_dot"
+            ]
+          },
+          "lower_dot"
+        ]
+      }
+    }
+  ]
+}

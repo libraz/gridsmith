@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "mode": "mark",
+  "grid": {
+    "divisions": 4
+  },
+  "concept": "Two discs of radius R overlap in a leaf; the same pair of radius 2R discs, shifted along the axis, cuts the midrib and draws the stem.",
+  "shapes": [
+    {
+      "id": "cheek_a",
+      "type": "circle",
+      "center": [
+        -1.5,
+        1.5
+      ],
+      "r": "R"
+    },
+    {
+      "id": "cheek_b",
+      "type": "circle",
+      "center": [
+        1.5,
+        -1.5
+      ],
+      "r": "R"
+    },
+    {
+      "id": "rib_a",
+      "type": "circle",
+      "center": [
+        -5,
+        6
+      ],
+      "r": "R*2"
+    },
+    {
+      "id": "rib_b",
+      "type": "circle",
+      "center": [
+        6,
+        -5
+      ],
+      "r": "R*2"
+    },
+    {
+      "id": "stem_a",
+      "type": "circle",
+      "center": [
+        -8.5,
+        2.5
+      ],
+      "r": "R*2"
+    },
+    {
+      "id": "stem_b",
+      "type": "circle",
+      "center": [
+        2.5,
+        -8.5
+      ],
+      "r": "R*2"
+    }
+  ],
+  "paint": [
+    {
+      "fill": {
+        "union": [
+          {
+            "subtract": [
+              {
+                "intersect": [
+                  "cheek_a",
+                  "cheek_b"
+                ]
+              },
+              {
+                "intersect": [
+                  "rib_a",
+                  "rib_b"
+                ]
+              }
+            ]
+          },
+          {
+            "intersect": [
+              "stem_a",
+              "stem_b"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

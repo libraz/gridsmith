@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 4
+  },
+  "shapes": [
+    {
+      "id": "c1",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "c2",
+      "type": "circle",
+      "r": "c1.r*sqrt3/2"
+    },
+    {
+      "id": "c3",
+      "type": "circle",
+      "r": "c2.r*sqrt3/2"
+    },
+    {
+      "id": "c4",
+      "type": "circle",
+      "r": "c3.r*sqrt3/2"
+    },
+    {
+      "id": "c5",
+      "type": "circle",
+      "r": "c4.r*sqrt3/2"
+    },
+    {
+      "id": "h1",
+      "type": "polygon",
+      "in": "c1",
+      "n": 6
+    },
+    {
+      "id": "h2",
+      "type": "polygon",
+      "in": "c2",
+      "n": 6,
+      "rotate": 30
+    },
+    {
+      "id": "h3",
+      "type": "polygon",
+      "in": "c3",
+      "n": 6
+    },
+    {
+      "id": "h4",
+      "type": "polygon",
+      "in": "c4",
+      "n": 6,
+      "rotate": 30
+    },
+    {
+      "id": "h5",
+      "type": "polygon",
+      "in": "c5",
+      "n": 6
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "c1",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "c5"
+      ],
+      "width": 0.0625
+    }
+  ]
+}

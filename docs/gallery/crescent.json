@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "mode": "mark",
+  "grid": {
+    "divisions": 4
+  },
+  "concept": "A crescent cut from one disc by a second, offset one module up and right.",
+  "shapes": [
+    {
+      "id": "body",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "bite",
+      "type": "circle",
+      "center": [
+        1,
+        1
+      ],
+      "r": 3
+    }
+  ],
+  "paint": [
+    {
+      "fill": {
+        "subtract": [
+          "body",
+          "bite"
+        ]
+      }
+    }
+  ]
+}

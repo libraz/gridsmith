@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "mode": "figure",
+  "grid": {
+    "divisions": 8
+  },
+  "shapes": [
+    {
+      "id": "a1",
+      "type": "circle",
+      "r": "R"
+    },
+    {
+      "id": "a2",
+      "type": "circle",
+      "r": 7.75
+    },
+    {
+      "id": "t_out",
+      "type": "circle",
+      "r": 7.25
+    },
+    {
+      "id": "t_in",
+      "type": "circle",
+      "r": 6.5
+    },
+    {
+      "id": "c1",
+      "type": "circle",
+      "r": 6
+    },
+    {
+      "id": "c2",
+      "type": "circle",
+      "r": 5.75
+    },
+    {
+      "id": "d1",
+      "type": "circle",
+      "r": 5
+    },
+    {
+      "id": "d2",
+      "type": "circle",
+      "r": 4.75
+    },
+    {
+      "id": "sq_a",
+      "type": "circle",
+      "r": 4.5
+    },
+    {
+      "id": "sq_b",
+      "type": "circle",
+      "r": "sq_a.r/sqrt2"
+    },
+    {
+      "id": "tri_a",
+      "type": "circle",
+      "r": 2
+    },
+    {
+      "id": "tri_b",
+      "type": "circle",
+      "r": "tri_a.r/2"
+    },
+    {
+      "id": "med",
+      "type": "circle",
+      "center": {
+        "on": "t_in",
+        "angle": 90
+      },
+      "r": 1.75
+    },
+    {
+      "id": "dmed",
+      "type": "circle",
+      "center": {
+        "on": "t_in",
+        "angle": 45
+      },
+      "r": 1
+    },
+    {
+      "id": "tick_a",
+      "type": "line",
+      "from": {
+        "on": "t_out",
+        "angle": 0
+      },
+      "to": {
+        "on": "t_in",
+        "angle": 0
+      }
+    },
+    {
+      "id": "tick_b",
+      "type": "line",
+      "from": {
+        "on": "t_out",
+        "angle": 7.5
+      },
+      "to": {
+        "on": "t_in",
+        "angle": 7.5
+      }
+    },
+    {
+      "id": "ticks_a",
+      "type": "repeat",
+      "of": [
+        "tick_a"
+      ],
+      "n": 24
+    },
+    {
+      "id": "ticks_b",
+      "type": "repeat",
+      "of": [
+        "tick_b"
+      ],
+      "n": 24
+    },
+    {
+      "id": "sq1",
+      "type": "polygon",
+      "in": "sq_a",
+      "n": 4
+    },
+    {
+      "id": "sq2",
+      "type": "polygon",
+      "in": "sq_b",
+      "n": 4,
+      "rotate": 45
+    },
+    {
+      "id": "tri1",
+      "type": "polygon",
+      "in": "tri_a",
+      "n": 3,
+      "rotate": 90
+    },
+    {
+      "id": "tri2",
+      "type": "polygon",
+      "in": "tri_b",
+      "n": 3,
+      "rotate": 270
+    },
+    {
+      "id": "star",
+      "type": "polygon",
+      "in": "med",
+      "n": 5,
+      "step": 2,
+      "rotate": 90
+    },
+    {
+      "id": "gem",
+      "type": "polygon",
+      "in": "dmed",
+      "n": 4,
+      "rotate": 45
+    },
+    {
+      "id": "medals",
+      "type": "repeat",
+      "of": [
+        "med",
+        "dmed"
+      ],
+      "n": 4
+    },
+    {
+      "id": "emblems",
+      "type": "repeat",
+      "of": [
+        "star",
+        "gem"
+      ],
+      "n": 4
+    }
+  ],
+  "paint": [
+    {
+      "stroke": [
+        "a1",
+        "a2",
+        "t_out",
+        "t_in",
+        "c1",
+        "c2",
+        "d1",
+        "d2",
+        "ticks_a",
+        "ticks_b"
+      ],
+      "width": 0.0625
+    },
+    {
+      "erase": [
+        "medals"
+      ]
+    },
+    {
+      "stroke": [
+        "medals",
+        "sq1",
+        "sq2",
+        "tri1",
+        "tri2"
+      ],
+      "width": 0.125
+    },
+    {
+      "stroke": [
+        "emblems"
+      ],
+      "width": 0.0625
+    }
+  ]
+}
