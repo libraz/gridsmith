@@ -53,7 +53,9 @@ export function intersectCircleCircle(a: Circle, b: Circle): CircleCircleResult 
     return { kind: 'none' };
   }
   const along = (d * d + a.r * a.r - b.r * b.r) / (2 * d);
-  const h = Math.sqrt(Math.max(0, a.r * a.r - along * along));
+  // Product form; the difference of squares cancels for thin overlaps.
+  const h2 = (a.r + b.r - d) * (d - a.r + b.r) * (d + a.r - b.r) * (d + a.r + b.r);
+  const h = Math.sqrt(Math.max(0, h2)) / (2 * d);
   const mid = add(ca, scale(u, along));
   const n = scale(leftNormal(u), h);
   return { kind: 'two', points: [add(mid, n), sub(mid, n)] };
@@ -70,7 +72,7 @@ export function intersectCircleLine(c: Circle, line: Line): CircleLineResult {
   if (Math.abs(s) > c.r) {
     return { kind: 'none' };
   }
-  const h = Math.sqrt(c.r * c.r - s * s);
+  const h = Math.sqrt(Math.max(0, (c.r - Math.abs(s)) * (c.r + Math.abs(s))));
   const along = scale(line.d, h);
   return { kind: 'two', points: [add(foot, along), sub(foot, along)] };
 }
