@@ -4,3 +4,4 @@ dist/
 coverage/
 .yarn/install-state.gz
 CLAUDE.md
+.serena/
