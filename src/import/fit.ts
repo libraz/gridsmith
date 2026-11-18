@@ -18,8 +18,8 @@ export type FitPiece =
 /** Fitted pieces in curve order and the largest sample distance from them. */
 export type Fit = { pieces: FitPiece[]; deviation: number };
 
-/** Largest allowed sample distance, in modules (0.1 px at 24 px). */
-export const FIT_TOLERANCE = 0.1;
+/** Default largest sample distance, in modules (0.2 px at 192 px). */
+export const FIT_TOLERANCE = 0.025;
 /** Intervals sampled per section. */
 export const FIT_SAMPLES = 16;
 /** Halvings allowed below each inflection-free section. */
@@ -104,15 +104,15 @@ function toSegment(p: Vec, a: Vec, b: Vec): number {
 const samples = (c: Cubic): Vec[] =>
   Array.from({ length: FIT_SAMPLES + 1 }, (_, k) => at(c, k / FIT_SAMPLES));
 
-/** One piece for an inflection-free section, or null when it must be halved. */
-function fitSection(c: Cubic): { piece: FitPiece; deviation: number } | null {
+/** One piece for an inflection-free section within `tolerance`, or null when it must be halved. */
+function fitSection(c: Cubic, tolerance: number): { piece: FitPiece; deviation: number } | null {
   const [p0, , , p3] = c;
   const pts = samples(c);
   if (dist(p0, p3) < TINY) {
     return null;
   }
   const flat = Math.max(...pts.map((p) => toSegment(p, p0, p3)));
-  if (flat <= FIT_TOLERANCE) {
+  if (flat <= tolerance) {
     return { piece: { kind: 'line', a: p0, b: p3 }, deviation: flat };
   }
   const m = at(c, 0.5);
@@ -142,15 +142,15 @@ function fitSection(c: Cubic): { piece: FitPiece; deviation: number } | null {
     return null;
   }
   const deviation = Math.max(...pts.map((p) => Math.abs(dist(p, centre) - r)));
-  if (deviation > FIT_TOLERANCE) {
+  if (deviation > tolerance) {
     return null;
   }
   return { piece: { kind: 'arc', a: p0, b: p3, c: centre, r, ccw }, deviation };
 }
 
 /** Fits a section, halving it up to {@link FIT_DEPTH} times; null when that runs out. */
-function fitRecursive(c: Cubic, depth: number): Fit | null {
-  const one = fitSection(c);
+function fitRecursive(c: Cubic, depth: number, tolerance: number): Fit | null {
+  const one = fitSection(c, tolerance);
   if (one !== null) {
     return { pieces: [one.piece], deviation: one.deviation };
   }
@@ -158,8 +158,8 @@ function fitRecursive(c: Cubic, depth: number): Fit | null {
     return null;
   }
   const [left, right] = split(c, 0.5);
-  const l = fitRecursive(left, depth + 1);
-  const r = l === null ? null : fitRecursive(right, depth + 1);
+  const l = fitRecursive(left, depth + 1, tolerance);
+  const r = l === null ? null : fitRecursive(right, depth + 1, tolerance);
   if (l === null || r === null) {
     return null;
   }
@@ -168,12 +168,19 @@ function fitRecursive(c: Cubic, depth: number): Fit | null {
 
 /**
  * Approximates the cubic Bezier p0..p3 with lines and arcs of less than 180 degrees, each
- * within {@link FIT_TOLERANCE} of 17 samples of its section.
+ * within `tolerance` of 17 samples of its section.
  *
+ * @param tolerance Largest allowed sample distance, in modules; {@link FIT_TOLERANCE} by default.
  * @returns The pieces in curve order (none for a curve collapsed to a point), or null when a
  *   section still fails after {@link FIT_DEPTH} halvings.
  */
-export function fitCubic(p0: Vec, p1: Vec, p2: Vec, p3: Vec): Fit | null {
+export function fitCubic(
+  p0: Vec,
+  p1: Vec,
+  p2: Vec,
+  p3: Vec,
+  tolerance = FIT_TOLERANCE,
+): Fit | null {
   if ([p1, p2, p3].every((p) => dist(p, p0) <= TINY)) {
     return { pieces: [], deviation: 0 };
   }
@@ -190,7 +197,7 @@ export function fitCubic(p0: Vec, p1: Vec, p2: Vec, p3: Vec): Fit | null {
   const pieces: FitPiece[] = [];
   let deviation = 0;
   for (const section of sections) {
-    const fit = fitRecursive(section, 0);
+    const fit = fitRecursive(section, 0, tolerance);
     if (fit === null) {
       return null;
     }

@@ -152,6 +152,44 @@ describe('importSegments conversion table', () => {
     ]);
   });
 
+  it('keeps a dashed closed axis-parallel 4-point subpath as points in path order', () => {
+    // The dash pattern starts at the first vertex and runs along the path, top-left clockwise.
+    const d = 'M2.6 2.6h18.8v18.8h-18.8z';
+    const through = [
+      [-9.4, 9.4],
+      [9.4, 9.4],
+      [9.4, -9.4],
+      [-9.4, -9.4],
+    ];
+    const dashed = { strokeDasharray: '1 1.35', strokeLinecap: 'butt' };
+    expect(convert([stroked(d, dashed)])).toMatchObject({
+      spec: {
+        shapes: [{ id: 's0_0', type: 'points', through }],
+        paint: [{ stroke: ['s0_0'], dash: [1, 1.35] }],
+      },
+      notes: [],
+    });
+    expect(convert([stroked(d, { ...dashed, fill: '#ffffff' })]).spec).toMatchObject({
+      shapes: [{ id: 's0_0', type: 'points', through }],
+      paint: [{ fill: 's0_0' }, { stroke: ['s0_0'], dash: [1, 1.35] }],
+    });
+  });
+
+  it('converts a dashed circle, oval and rounded rect as they are, with a note dash phase', () => {
+    const dashed = { strokeDasharray: '1 1' };
+    const cases: [string, string][] = [
+      ['M8 12a4 4 0 1 0 8 0a4 4 0 1 0 -8 0z', 'circle'],
+      ['M6 12a6 4 0 1 0 12 0a6 4 0 1 0 -12 0z', 'oval'],
+      ['M6 9h12a3 3 0 0 1 0 6h-12a3 3 0 0 1 0 -6z', 'rect'],
+    ];
+    for (const [d, type] of cases) {
+      const result = convert([stroked(d, dashed)]);
+      expect(result.spec?.shapes).toMatchObject([{ id: 's0_0', type }]);
+      expect(result.notes).toEqual([{ segment: 0, subpath: 0, note: 'dash phase' }]);
+      expect(convert([stroked(d)]).notes).toEqual([]);
+    }
+  });
+
   it('turns any other closed line subpath into points', () => {
     expect(shapesOf([filled('M3.6 6.2L6.5 4.13L6.5 8.27z')])).toEqual([
       {
@@ -181,14 +219,46 @@ describe('importSegments conversion table', () => {
   });
 
   it('accepts an arc pair whose chord misses the diameter by up to 0.02, with a note', () => {
-    expect(convert([filled('M8 12a4 4 0 1 0 7.99 0a4 4 0 1 0 -7.99 0z')])).toMatchObject({
-      spec: { shapes: [{ id: 's0_0', type: 'circle', center: [-0.005, 0], r: 4 }] },
+    // Chord 7.99 under r 4: each large arc's centre sits sqrt(16 - 3.995^2) off the chord on
+    // the arc's own side, so the pair reaches 4 along the chord and further across it.
+    const result = convert([filled('M8 12a4 4 0 1 0 7.99 0a4 4 0 1 0 -7.99 0z')]);
+    expect(result).toMatchObject({
+      spec: { shapes: [{ id: 's0_0', type: 'oval', center: [-0.005, 0], rx: 4, rotate: 0 }] },
       notes: [{ segment: 0, subpath: 0, note: 'rounded arc pair' }],
     });
+    const [oval] = result.spec?.shapes ?? [];
+    expect(oval?.type === 'oval' ? oval.ry : undefined).toBeCloseTo(
+      4 + Math.sqrt(16 - 3.995 ** 2),
+      4,
+    );
     // A chord 0.1 off the diameter is no pair, but the two arcs still bound an outline.
     const loose = convert([filled('M8 12a4 4 0 1 0 7.9 0a4 4 0 1 0 -7.9 0z')]);
     expect(loose.skipped).toEqual([]);
     expect(loose.spec?.shapes.some((s) => s.type === 'outline')).toBe(true);
+  });
+
+  it('reads an arc pair whose chord exceeds the diameter as one circle of the scaled radius', () => {
+    // Chord 8.01 over r 4: SVG scales the radius to half the chord and centres it on the chord.
+    expect(convert([filled('M8 12a4 4 0 1 0 8.01 0a4 4 0 1 0 -8.01 0z')])).toMatchObject({
+      spec: { shapes: [{ id: 's0_0', type: 'circle', center: [0.005, 0], r: 4.005 }] },
+      notes: [{ segment: 0, subpath: 0, note: 'rounded arc pair' }],
+    });
+  });
+
+  it('stretches an elliptical arc pair across a chord short of the diameter, filled or stroked', () => {
+    // Chord 4.09 along rx 2.05: each centre sits 3.3 * sqrt(1 - (2.045 / 2.05)^2) off the chord.
+    const d = 'M8.82 7.4a2.05 3.3 0 1 0 4.09 0a2.05 3.3 0 1 0 -4.09 0z';
+    const fill = convert([filled(d)]);
+    expect(fill).toMatchObject({
+      spec: { shapes: [{ id: 's0_0', type: 'oval', center: [-1.135, 4.6], rx: 2.05, rotate: 0 }] },
+      notes: [{ segment: 0, subpath: 0, note: 'rounded arc pair' }],
+    });
+    const [oval] = fill.spec?.shapes ?? [];
+    expect(oval?.type === 'oval' ? oval.ry : undefined).toBeCloseTo(
+      3.3 + 3.3 * Math.sqrt(1 - (2.045 / 2.05) ** 2),
+      4,
+    );
+    expect(shapesOf([stroked(d)])).toEqual(fill.spec?.shapes);
   });
 
   it('turns two elliptical arcs into an oval, taking the rotation from the transform', () => {
@@ -255,6 +325,14 @@ describe('importSegments conversion table', () => {
         ],
       },
       notes: [],
+    });
+  });
+
+  it('turns four quarter arcs joined by zero-length lines on all sides into a circle', () => {
+    const d = 'M6.2 15h0a3 3 0 0 1 3 3v0a3 3 0 0 1 -3 3h0a3 3 0 0 1 -3 -3v0a3 3 0 0 1 3 -3z';
+    expect(convert([filled(d)])).toMatchObject({
+      spec: { shapes: [{ id: 's0_0', type: 'circle', center: [-5.8, -6], r: 3 }] },
+      skipped: [],
     });
   });
 
@@ -429,15 +507,16 @@ describe('importSegments conversion table', () => {
         ],
       },
     ]);
-    // A quarter of a 6 x 4 ellipse, run clockwise from the left end to the top, then a line.
+    // A quarter of a 6 x 4 ellipse, run clockwise from the left end to the top, then a line
+    // turning down at a corner.
     expect(
-      convert([stroked('M6 12A6 4 0 0 1 12 8h2', { strokeLinecap: 'butt' })]).skipped[0]?.pieces,
+      convert([stroked('M6 12A6 4 0 0 1 12 8v2', { strokeLinecap: 'butt' })]).skipped[0]?.pieces,
     ).toEqual([
       { ellipse: { center: [0, 0], rx: 6, ry: 4, rotate: 0, from: 90, to: 180 } },
       {
         line: [
           [0, 4],
-          [2, 4],
+          [0, 2],
         ],
       },
     ]);
@@ -468,6 +547,38 @@ describe('importSegments conversion table', () => {
   it('treats a partly overlapping nonzero circle and triangle as two roots', () => {
     const d = 'M17.6 12.8a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0zM19.2 8.6L17.6 12.8L20.8 12.8z';
     expect(paintOf([filled(d)])).toEqual([{ fill: { union: ['s0_0', 's0_1'] }, color: BLACK }]);
+  });
+
+  it('fills a nonzero circle and rect wound opposite ways as their symmetric difference', () => {
+    // The circle runs counter-clockwise on screen and the rect clockwise: the overlap winds to 0.
+    const d = 'M10.1 15.2a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0 -3.8 0zM11.2 15.2h1.6v3.8h-1.6z';
+    const result = convert([filled(d)]);
+    expect(result.spec?.paint).toEqual([
+      {
+        fill: { subtract: [{ union: ['s0_0', 's0_1'] }, { intersect: ['s0_0', 's0_1'] }] },
+        color: BLACK,
+      },
+    ]);
+    expect(result.notes).toEqual([]);
+  });
+
+  it('fills two partly overlapping evenodd squares as their symmetric difference', () => {
+    // Both run clockwise on screen; under evenodd the overlap counts twice and stays empty.
+    expect(paintOf([filled('M2 2h6v6H2zM5 5h6v6H5z', { fillRule: 'evenodd' })])).toEqual([
+      {
+        fill: { subtract: [{ union: ['s0_0', 's0_1'] }, { intersect: ['s0_0', 's0_1'] }] },
+        color: BLACK,
+      },
+    ]);
+  });
+
+  it('keeps the union of three nonzero roots that do not match, with a note fill differs', () => {
+    // The first two squares overlap wound opposite ways; the third lies apart from both.
+    const result = convert([filled('M2 2h6v6H2zM5 5v6h6V5zM16 16h4v4h-4z')]);
+    expect(result.spec?.paint).toEqual([
+      { fill: { union: ['s0_0', 's0_1', 's0_2'] }, color: BLACK },
+    ]);
+    expect(result.notes).toEqual([{ segment: 0, subpath: -1, note: 'fill differs' }]);
   });
 
   it('still nests a hole that shares a vertex with its outer subpath, despite the overlap test', () => {
@@ -794,19 +905,82 @@ describe('importSegments curves', () => {
     expect(ovalResult.spec?.shapes.at(-1)?.type).toBe('outline');
   });
 
+  it('fits a curve bulging 0.06 over a chord of 6 as two lines by default, one at fitTolerance 0.1', () => {
+    // The arc through it has radius about 75, so at 0.025 it is halved at (-7, 0.06) and each
+    // half bulges 0.015.
+    const d = 'M2 12C4 11.92 6 11.92 8 12';
+    const fine = convert([stroked(d)]);
+    expect(fine.spec?.shapes).toEqual([
+      {
+        id: 's0_0',
+        type: 'polyline',
+        through: [
+          [-10, 0],
+          [-7, 0.06],
+          [-4, 0],
+        ],
+      },
+    ]);
+    expect(fine.notes).toMatchObject([{ note: 'curve fit', curves: 1, arcs: 2 }]);
+    const coarse = importSegments([stroked(d)], { fitTolerance: 0.1 });
+    expect(coarse.spec?.shapes).toEqual([
+      { id: 's0_0', type: 'line', from: [-10, 0], to: [-4, 0] },
+    ]);
+    expect(coarse.notes).toMatchObject([{ note: 'curve fit', curves: 1, arcs: 1 }]);
+  });
+
+  it('refits elliptical arcs within fitTolerance', () => {
+    const d = 'M2 12h4A3 2.4 0 0 1 10 8';
+    const arcsAt = (fitTolerance: number) => {
+      const note = importSegments([stroked(d)], { fitTolerance }).notes[0];
+      expect(note?.deviation).toBeLessThanOrEqual(fitTolerance);
+      return note?.arcs ?? 0;
+    };
+    expect(arcsAt(0.005)).toBeGreaterThan(arcsAt(0.1));
+  });
+
+  it('rejects a fitTolerance that is not a positive number', () => {
+    for (const fitTolerance of [0, -0.1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => importSegments([stroked('M2 2H8')], { fitTolerance })).toThrow(/fitTolerance/);
+    }
+  });
+
   it('skips a curve that cannot be fitted as bezier and keeps reading the later subpaths', () => {
     const result = convert([stroked('M0 0C100 0 100 100 0 100M8 8H9')]);
     expect(result.skipped).toEqual([{ segment: 0, subpath: 0, reason: 'bezier' }]);
     expect(result.spec?.shapes).toEqual([{ id: 's0_1', type: 'line', from: [-4, 4], to: [-3, 4] }]);
   });
 
-  it('skips a subpath whose curves fit to more than 16 pieces as bezier', () => {
-    const straight = (n: number) => `M2 12${'c0.25 0 0.5 0 0.75 0'.repeat(n)}`;
-    const sixteen = convert([stroked(straight(16))]);
-    expect(sixteen.skipped).toEqual([]);
-    expect(sixteen.spec?.shapes[0]).toMatchObject({ type: 'polyline' });
-    expect(sixteen.notes).toMatchObject([{ curves: 16, arcs: 16 }]);
-    expect(skipsOf([stroked(straight(17))])).toEqual(['bezier']);
+  it('skips a subpath whose curves fit to more than 64 pieces as bezier', () => {
+    /** A regular n-gon of radius 10 whose edges bulge out as quarter circles, one cubic each. */
+    const scallops = (n: number) => {
+      const f = (v: number) => v.toFixed(6);
+      const half = Math.sin(Math.PI / n) * 10;
+      const r = half * Math.SQRT2;
+      const k = (4 / 3) * Math.tan(Math.PI / 8);
+      const cubics = Array.from({ length: n }, (_, i) => {
+        const mid = ((2 * i + 1) * Math.PI) / n;
+        const off = Math.cos(Math.PI / n) * 10 - half;
+        const [cx, cy] = [12 + off * Math.cos(mid), 12 + off * Math.sin(mid)];
+        const [a0, a1] = [mid - Math.PI / 4, mid + Math.PI / 4];
+        const end = [cx + r * Math.cos(a1), cy + r * Math.sin(a1)];
+        const c1 = [
+          cx + r * (Math.cos(a0) - k * Math.sin(a0)),
+          cy + r * (Math.sin(a0) + k * Math.cos(a0)),
+        ];
+        const c2 = [
+          cx + r * (Math.cos(a1) + k * Math.sin(a1)),
+          cy + r * (Math.sin(a1) - k * Math.cos(a1)),
+        ];
+        return `C${[...c1, ...c2, ...end].map(f).join(' ')}`;
+      });
+      return `M22 12${cubics.join('')}Z`;
+    };
+    const sixtyFour = convert([filled(scallops(64))]);
+    expect(sixtyFour.skipped).toEqual([]);
+    expect(sixtyFour.spec?.shapes.at(-1)?.type).toBe('outline');
+    expect(sixtyFour.notes).toMatchObject([{ curves: 64, arcs: 64 }]);
+    expect(skipsOf([filled(scallops(65))])).toEqual(['bezier']);
   });
 });
 
@@ -958,11 +1132,162 @@ describe('filled outlines', () => {
   });
 
   it('tidies nothing when one part of the subpath cannot become an outline', () => {
-    // The second part crosses itself: its edge to (-6, -6) meets its edge to (0, -2).
-    const result = convert([filled('M12 12L16 12A4 4 0 0 0 12 8L12 12L6 18L6 12L12 14z')]);
+    // The second part crosses itself where its edge to (-6, -6) meets its arc to (0, -2); a
+    // line crossing an arc is not cut.
+    const result = convert([
+      filled('M12 12L16 12A4 4 0 0 0 12 8L12 12L6 18L6 12A20 20 0 0 1 12 14z'),
+    ]);
     expect(result.spec).toBeNull();
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0]).toMatchObject({ reason: 'mixed path', detail: 'self_intersection' });
     expect(result.skipped[0]?.pieces).toHaveLength(7);
+  });
+});
+
+describe('filled rings that cross or turn back', () => {
+  // A chevron whose arms cross a bar capped by an inward half circle of radius 0.75.
+  const indent =
+    'M2.22 10.47a.75.75 0 0 1 1.06 0l2.5 2.5c.3.3.3.77 0 1.06l-2.5 2.5a.75.75 0 0 1-1.06-1.06l1.22-1.22H7.5a.75.75 0 0 1 0-1.5H3.44l-1.22-1.22a.75.75 0 0 1 0-1.06Z';
+
+  it('fills two arms and the wedge between the crossings less the cap circle', () => {
+    const result = convert([filled(indent)]);
+    expect(result.skipped).toEqual([]);
+    const ids = result.spec?.shapes.filter((s) => s.type === 'outline').map((s) => s.id);
+    expect(ids).toHaveLength(3);
+    const caps = result.spec?.shapes.filter((s) => s.id.endsWith('cap'));
+    // The cap's circle: centre (7.5, 13.5) in the source, radius 0.75.
+    expect(caps).toEqual([
+      { id: expect.any(String), type: 'circle', center: [-4.5, -1.5], r: 0.75 },
+    ]);
+    const cap = caps?.[0]?.id as string;
+    const wedge = cap.slice(0, -'cap'.length);
+    const arms = (ids ?? []).filter((id) => id !== wedge);
+    expect(arms).toHaveLength(2);
+    const [fill] = result.spec?.paint ?? [];
+    expect(fill).toMatchObject({ color: BLACK });
+    const region = (fill as { fill: { union: unknown[] } }).fill;
+    expect(region.union).toHaveLength(3);
+    expect(region.union).toEqual(expect.arrayContaining([...arms, { subtract: [wedge, cap] }]));
+  });
+
+  it('skips the ring as before when it is stroked too', () => {
+    const [skip] = convert([filled(indent, { stroke: '#ff0000', strokeWidth: '1' })]).skipped;
+    expect(skip).toMatchObject({ reason: 'mixed path', detail: 'direction_mismatch' });
+  });
+
+  it('fills a bar carved by a cusp half circle as its rect less the circle', () => {
+    // Rect x 2..8, y 11..13 (y down) whose right side is the half circle about (8, 12), radius 1,
+    // bulging inward.
+    const result = convert([filled('M2 13H8A1 1 0 0 1 8 11H2z')]);
+    expect(result.skipped).toEqual([]);
+    expect(result.spec?.shapes.at(-1)).toEqual({
+      id: 's0_0cap',
+      type: 'circle',
+      center: [-4, 0],
+      r: 1,
+    });
+    expect(result.spec?.paint).toEqual([{ fill: { subtract: ['s0_0', 's0_0cap'] }, color: BLACK }]);
+  });
+});
+
+describe('filled rings with ellipse arcs', () => {
+  /** Rect x -8..-2, y 0..8 (y up) closed on the right by half a 6 x 4 ellipse. */
+  const dee = 'M4 4h6a6 4 0 0 1 0 8h-6z';
+
+  it('fills a D closed by an ellipse arc as its rect united with the oval', () => {
+    // Clockwise in y-up with a clockwise arc: the arc turns with the ring and bulges out.
+    const result = convert([filled(dee)]);
+    expect(result.skipped).toEqual([]);
+    expect(result.spec?.shapes).toEqual([
+      {
+        id: 's0_0',
+        type: 'rect',
+        corners: [
+          [-8, 0],
+          [-2, 8],
+        ],
+      },
+      { id: 's0_0e0', type: 'oval', center: [-2, 4], rx: 6, ry: 4, rotate: 0 },
+    ]);
+    expect(result.spec?.paint).toEqual([{ fill: { union: ['s0_0', 's0_0e0'] }, color: BLACK }]);
+  });
+
+  it('subtracts an evenodd hole that is itself composed from an ellipse arc', () => {
+    // Both rings run clockwise with clockwise arcs: each is its rect united with its oval.
+    const hole = 'M6 6h4a3 2 0 0 1 0 4h-4z';
+    const result = convert([filled(`${dee}${hole}`, { fillRule: 'evenodd' })]);
+    expect(result.skipped).toEqual([]);
+    expect(result.spec?.shapes.slice(2)).toEqual([
+      {
+        id: 's0_1',
+        type: 'rect',
+        corners: [
+          [-6, 2],
+          [-2, 6],
+        ],
+      },
+      { id: 's0_1e0', type: 'oval', center: [-2, 4], rx: 3, ry: 2, rotate: 0 },
+    ]);
+    expect(result.spec?.paint).toEqual([
+      {
+        fill: { subtract: [{ union: ['s0_0', 's0_0e0'] }, { union: ['s0_1', 's0_1e0'] }] },
+        color: BLACK,
+      },
+    ]);
+  });
+
+  it('skips an ellipse arc whose oval reaches outside a narrow ring, with detail ellipse', () => {
+    // The chord ring spans x -2..0; the rest of the oval reaches x = -6, outside the fill.
+    const result = convert([filled('M10 4h2a6 4 0 0 1 0 8h-2z')]);
+    expect(result.spec).toBeNull();
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]).toMatchObject({ reason: 'mixed path', detail: 'ellipse' });
+    expect(result.skipped[0]?.pieces).toHaveLength(4);
+  });
+
+  it('fills an open line, ellipse arc and line and strokes it as a polyline, an arc and a line', () => {
+    // Closed by its chord the ring runs counter-clockwise, as does the lower half ellipse: it adds.
+    // The lines leave and meet the arc vertically, so butt caps leave no gap at the seams.
+    const d = 'M2 2L4 4V12A6 3 0 0 0 16 12V4';
+    const result = convert([
+      filled(d, { fill: '#ffffff', stroke: BLACK, strokeWidth: '1', strokeLinejoin: 'round' }),
+    ]);
+    expect(result.skipped).toEqual([]);
+    expect(result.spec?.shapes).toEqual([
+      {
+        id: 's0_0',
+        type: 'points',
+        through: [
+          [-10, 10],
+          [-8, 8],
+          [-8, 0],
+          [4, 0],
+          [4, 8],
+        ],
+      },
+      { id: 's0_0e0', type: 'oval', center: [-2, 0], rx: 6, ry: 3, rotate: 0 },
+      {
+        id: 's0_0a',
+        type: 'polyline',
+        through: [
+          [-10, 10],
+          [-8, 8],
+          [-8, 0],
+        ],
+      },
+      { id: 's0_0b', type: 'arc', on: 's0_0e0', from: 180, to: 0 },
+      { id: 's0_0c', type: 'line', from: [4, 0], to: [4, 8] },
+    ]);
+    expect(result.spec?.paint).toEqual([
+      { fill: { union: ['s0_0', 's0_0e0'] }, color: '#ffffff' },
+      { stroke: ['s0_0a', 's0_0b', 's0_0c'], width: 1, color: BLACK, cap: 'butt', join: 'round' },
+    ]);
+  });
+
+  it('does not split a butt stroke whose lines meet the ellipse arc at a corner', () => {
+    const d = 'M2 4L4 12A6 3 0 0 0 16 12L18 4';
+    const butt = { strokeLinecap: 'butt' };
+    expect(skipsOf([stroked(d, butt)])).toEqual(['mixed path']);
+    expect(skipsOf([stroked(d, { ...butt, fill: '#ffffff' })])).toEqual(['mixed path']);
   });
 });

@@ -1017,6 +1017,42 @@ describe('icon mode rules', () => {
   });
 
   describe('off_grid', () => {
+    const stepped = (step: number | undefined, x: number): SpecInput =>
+      ({
+        ...iconWith([{ id: 'l', type: 'line', from: [x, 0], to: [x + 3, 1] }]),
+        grid: { divisions: 12, ...(step === undefined ? {} : { step }) },
+      }) as SpecInput;
+
+    it.each([
+      [undefined, 1.5, false],
+      [undefined, 1.25, true],
+      [0.5, 1.2, true],
+      [0.25, 1.25, false],
+      [0.25, 1.1, true],
+      [0.1, 1.1, false],
+      [0.1, 0.3, false],
+      [0.1, 1.25, true],
+    ])('with grid.step %s a coordinate %s is off grid: %s', (step, x, off) => {
+      expect(has(stepped(step, x), 'off_grid', 'l')).toBe(off);
+    });
+
+    it('reports the step in the message', () => {
+      const hit = run(stepped(0.1, 1.25)).violations.find((v) => v.rule === 'off_grid');
+      expect(hit?.message).toContain('multiple of 0.1');
+    });
+
+    it('lists the icon steps in the rule table', () => {
+      expect(RULES.off_grid.iconSteps).toEqual([0.5, 0.25, 0.1]);
+    });
+
+    it('turns an off_grid exception unused once the finer step makes the coordinate legal', () => {
+      const input = {
+        ...stepped(0.25, 1.25),
+        exceptions: [{ rule: 'off_grid', target: 'l', reason: 'drawn at 1.25' }],
+      } as SpecInput;
+      expect(rulesOf(input)).toEqual(['unused_exception']);
+    });
+
     it('uses a step of 0.5 for the numbers of the new shapes', () => {
       const clean = iconWith([
         rect(

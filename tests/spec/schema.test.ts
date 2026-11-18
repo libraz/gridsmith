@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
+  iconGridStep,
   isCircleLike,
   isRegionBounded,
   paintReferences,
@@ -1651,5 +1652,34 @@ describe('icon mode', () => {
       'too many drawn elements after repeat expansion (received: at least 2112; allowed: at most 2048)',
     ]);
     expectRejectedAt(iconSpec({ shapes, paint: layers(11) }), 'paint.10.stroke.0');
+  });
+});
+
+describe('grid.step', () => {
+  const stepSpec = (mode: string, step: unknown): Obj => ({
+    version: 1,
+    mode,
+    grid: { divisions: mode === 'icon' ? 12 : 4, step },
+    shapes: [{ id: 'a', type: 'circle', r: 1 }],
+    paint: [{ fill: 'a', color: '#107c41' }],
+  });
+
+  it.each([0.5, 0.25, 0.1])('accepts step %d for an icon', (step) => {
+    expect(accepted(stepSpec('icon', step))).toBe(true);
+  });
+
+  it('keeps an omitted step omitted', () => {
+    const parsed = specSchema.parse(stepSpec('icon', undefined));
+    expect(parsed.grid.step).toBeUndefined();
+    expect(iconGridStep(parsed.grid)).toBe(0.5);
+    expect(iconGridStep({ step: 0.1 })).toBe(0.1);
+  });
+
+  it.each([0.2, 0, -0.5, '0.1', null])('rejects step %j for an icon', (step) => {
+    expectRejectedAt(stepSpec('icon', step), 'grid.step');
+  });
+
+  it.each(['mark', 'figure'])('rejects a step in a %s', (mode) => {
+    expectRejectedAt(stepSpec(mode, 0.5), 'grid.step');
   });
 });

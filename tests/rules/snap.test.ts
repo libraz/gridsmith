@@ -137,8 +137,9 @@ describe('snapSpec uneven steps', () => {
     ]);
   });
 
-  it('spaces uneven steps by the rounded mean step, centred on the span', () => {
-    const result = snap([polyline('p', [0, 1, 3, 4], [0, 1, 2, 3])]);
+  it('spaces equal steps by the rounded mean step, centred on the span', () => {
+    // Source steps 1.24, 1.26, 1.25 (mean 1.25) round plainly to 1, 1.5, 1.5.
+    const result = snap([polyline('p', [0, 1.24, 2.5, 3.75], [0, 1, 2, 3])]);
     expect(shapeOf(result, 'p').through).toEqual([
       [-0.5, 0],
       [1, 1],
@@ -172,12 +173,13 @@ describe('snapSpec uneven steps', () => {
   });
 
   it('rounds plainly and reports steps too wide when the run cannot fit the canvas', () => {
-    const result = snap([polyline('p', [0, 10, 21, 30], [0, 1, 2, 3])]);
+    // Steps of 10.25 round to 10.5, and three of them span 31.5 modules.
+    const result = snap([polyline('p', [0, 10.25, 20.5, 30.75], [0, 1, 2, 3])]);
     expect(shapeOf(result, 'p').through).toEqual([
       [0, 0],
-      [10, 1],
-      [21, 2],
-      [30, 3],
+      [10.5, 1],
+      [20.5, 2],
+      [31, 3],
     ]);
     expect(result.kept).toEqual([{ id: 'p', reason: 'steps too wide' }]);
   });
@@ -198,6 +200,119 @@ describe('snapSpec uneven steps', () => {
       { id: 'c', type: 'circle', center: [1.3001, 1], r: 1 },
     ]);
     expect(shapeOf(result, 'c').center).toEqual([1.5, 1]);
+  });
+});
+
+describe('snapSpec uneven source steps', () => {
+  it('rounds plainly and reports a polyline whose source steps differ by more than 5%', () => {
+    // Steps 1, 2, 1: spread 1 over mean 1.33.
+    const result = snap([polyline('p', [0, 1, 3, 4], [0, 1, 2, 3])]);
+    expect(shapeOf(result, 'p').through).toEqual([
+      [0, 0],
+      [1, 1],
+      [3, 2],
+      [4, 3],
+    ]);
+    expect(result.kept).toEqual([{ id: 'p', reason: 'uneven steps' }]);
+  });
+
+  it('evens a polyline whose source steps differ by 5% or less of their mean', () => {
+    // Steps 1.23, 1.27, 1.25 spread 3.2% of the mean; steps 1.2, 1.3, 1.25 spread 8%.
+    const near = snap([polyline('p', [0, 1.23, 2.5, 3.75], [0, 1, 2, 3])]);
+    expect(near.kept).toEqual([]);
+    const far = snap([polyline('p', [0, 1.2, 2.5, 3.75], [0, 1, 2, 3])]);
+    expect(far.kept).toEqual([{ id: 'p', reason: 'uneven steps' }]);
+  });
+
+  it('does not report a polyline that plain rounding already leaves even', () => {
+    const result = snap([polyline('p', [0, 1.1, 2.1, 3.2], [0, 1, 2, 3])]);
+    expect(result.kept).toEqual([]);
+  });
+
+  it('lets keepDirections work on a polyline that was rounded plainly', () => {
+    // Segment 0 is diagonal (0.9 by 0.9); plain rounding makes it 0.5 by 1.
+    const result = snap([
+      {
+        id: 'p',
+        type: 'polyline',
+        through: [
+          [0.3, 0.1],
+          [1.2, 1],
+          [4.1, 2.4],
+          [4.7, 3.9],
+        ],
+      },
+    ]);
+    expect(result.kept).toEqual([{ id: 'p', reason: 'uneven steps' }]);
+    const through = shapeOf(result, 'p').through as [number, number][];
+    const [a, b] = [through[0] as [number, number], through[1] as [number, number]];
+    expect(Math.abs(b[0] - a[0])).toBeCloseTo(Math.abs(b[1] - a[1]), 9);
+  });
+});
+
+describe('snapSpec grid step', () => {
+  const stepped = (step: number, shapes: Json[]): SnapResult =>
+    snapSpec(icon(shapes, { grid: { divisions: 12, step } }));
+
+  it('rounds to multiples of the step of the spec and leaves grid as given', () => {
+    const shapes = [{ id: 'a', type: 'line', from: [0.26, -0.34], to: [3.14, 5.76] }];
+    const fine = stepped(0.1, shapes);
+    expect(shapeOf(fine, 'a')).toMatchObject({ from: [0.3, -0.3], to: [3.1, 5.8] });
+    expect(fine.spec.grid).toEqual({ divisions: 12, step: 0.1 });
+    const quarter = stepped(0.25, shapes);
+    expect(shapeOf(quarter, 'a')).toMatchObject({ from: [0.25, -0.25], to: [3.25, 5.75] });
+    const coarse = snap(shapes);
+    expect(shapeOf(coarse, 'a')).toMatchObject({ from: [0.5, -0.5], to: [3, 6] });
+    expect(coarse.spec.grid).toEqual({ divisions: 12 });
+  });
+
+  it('leaves no float residue at step 0.1', () => {
+    const result = stepped(0.1, [
+      { id: 'a', type: 'line', from: [0.3, 0.7], to: [2.9, -1.1] },
+      { id: 'c', type: 'circle', center: [0.29, 0.31], r: 0.61 },
+    ]);
+    expect(shapeOf(result, 'a')).toEqual({
+      id: 'a',
+      type: 'line',
+      from: [0.3, 0.7],
+      to: [2.9, -1.1],
+    });
+    expect(shapeOf(result, 'c')).toMatchObject({ center: [0.3, 0.3], r: 0.6 });
+  });
+
+  it('keeps radii at least one step, whatever the step', () => {
+    const result = stepped(0.1, [{ id: 'c', type: 'circle', center: [0, 0], r: 0.02 }]);
+    expect(shapeOf(result, 'c').r).toBe(0.1);
+  });
+
+  it('evens a polyline at step 0.1 without float residue', () => {
+    // Steps of 1.33 round to 1.3; the run 3.9 long is centred on 1.995, so it starts at 0.045 -> 0.
+    const result = stepped(0.1, [polyline('p', [0, 1.33, 2.66, 3.99], [0, 1, 2, 3])]);
+    const xs = (shapeOf(result, 'p').through as number[][]).map((v) => v[0]);
+    expect(xs).toEqual([0, 1.3, 2.6, 3.9]);
+    expect(result.kept).toEqual([]);
+  });
+
+  it('leaves a half turn 12.4 apart alone at step 0.1', () => {
+    const result = stepped(0.1, [
+      { id: 'c', type: 'circle', center: [0, 0], r: 6.2 },
+      { id: 'u', type: 'line', from: [-8, 6.2], to: [0, 6.2] },
+      { id: 'd', type: 'line', from: [-8, -6.2], to: [0, -6.2] },
+      { id: 'h', type: 'arc', on: 'c', from: 270, to: 90 },
+    ]);
+    expect(shapeOf(result, 'u')).toMatchObject({ from: [-8, 6.2], to: [0, 6.2] });
+    expect(shapeOf(result, 'd')).toMatchObject({ from: [-8, -6.2], to: [0, -6.2] });
+  });
+
+  it('does not widen a half turn 12.5 apart at step 0.25', () => {
+    const result = stepped(0.25, [
+      { id: 'c', type: 'circle', center: [0, 0], r: 6.25 },
+      { id: 'u', type: 'line', from: [-8, 6.25], to: [0, 6.25] },
+      { id: 'd', type: 'line', from: [-8, -6.25], to: [0, -6.25] },
+      { id: 'h', type: 'arc', on: 'c', from: 270, to: 90 },
+    ]);
+    expect(shapeOf(result, 'u')).toMatchObject({ from: [-8, 6.25], to: [0, 6.25] });
+    expect(shapeOf(result, 'd')).toMatchObject({ from: [-8, -6.25], to: [0, -6.25] });
   });
 });
 
@@ -443,16 +558,28 @@ describe('snapSpec arc angles', () => {
 });
 
 describe('snapSpec oval proportions', () => {
-  it('keeps the proportions of an oval', () => {
-    const radii = (rx: number, ry: number): Json => {
-      const result = snap([{ id: 'o', type: 'oval', center: [0, 0], rx, ry }]);
-      const { rx: x, ry: y } = shapeOf(result, 'o') as { rx: number; ry: number };
-      return { rx: x, ry: y };
-    };
-    // Short radius = rounded long radius / (long / short), to the nearest 0.5.
-    expect(radii(2.24, 2.8)).toEqual({ rx: 2.5, ry: 3 }); // 3 / 1.25 = 2.4
-    expect(radii(1.98, 2.8)).toEqual({ rx: 2, ry: 3 }); // 3 / 1.414 = 2.12
-    expect(radii(4.2, 1.6)).toEqual({ rx: 4, ry: 1.5 }); // 4 / 2.625 = 1.52
+  const radii = (rx: number, ry: number): Json => {
+    const result = snap([{ id: 'o', type: 'oval', center: [0, 0], rx, ry }]);
+    const { rx: x, ry: y } = shapeOf(result, 'o') as { rx: number; ry: number };
+    return { rx: x, ry: y };
+  };
+
+  it('rounds each radius of an oval to the nearest grid value', () => {
+    expect(radii(2.24, 2.8)).toEqual({ rx: 2, ry: 3 });
+    expect(radii(1.98, 2.8)).toEqual({ rx: 2, ry: 3 });
+    expect(radii(4.2, 1.6)).toEqual({ rx: 4, ry: 1.5 });
+    expect(radii(4.1, 4.8)).toEqual({ rx: 4, ry: 5 });
+  });
+
+  it('lifts a short radius to one step', () => {
+    expect(radii(1.4, 0.2)).toEqual({ rx: 1.5, ry: 0.5 });
+  });
+
+  it('keeps the original radii when rounding pushes the ratio past 4', () => {
+    // 4.6 / 1.2 = 3.83 rounds to 4.5 / 1 = 4.5.
+    const result = snap([{ id: 'o', type: 'oval', center: [0, 0], rx: 4.6, ry: 1.2 }]);
+    expect(shapeOf(result, 'o')).toMatchObject({ rx: 4.6, ry: 1.2 });
+    expect(result.kept).toEqual([{ id: 'o', reason: 'oval ratio' }]);
   });
 });
 
@@ -464,8 +591,8 @@ describe('arc on an oval', () => {
       { id: 'o', type: 'oval', center: [-6.4, -5.2], rx: 2.24, ry: 2.8 },
       arcOn(48.3, 311.7),
     ]);
-    // Rounded oval: centre (-6.5, -5), rx 2.5, ry 3. The end at 48.3 is about 0.160 from the one at 45.
-    expect(shapeOf(result, 'o')).toMatchObject({ center: [-6.5, -5], rx: 2.5, ry: 3 });
+    // Rounded oval: centre (-6.5, -5), rx 2, ry 3. The end at 48.3 is about 0.15 from the one at 45.
+    expect(shapeOf(result, 'o')).toMatchObject({ center: [-6.5, -5], rx: 2, ry: 3 });
     expect(shapeOf(result, 'a')).toMatchObject({ from: 45, to: 315 });
     expect(result.kept).toEqual([]);
   });
@@ -475,6 +602,17 @@ describe('arc on an oval', () => {
     // 3 degrees is nearest to 0; the points are (7.968, 0.418) and (8, 0), about 0.42 apart.
     expect(shapeOf(result, 'a')).toMatchObject({ from: 3, to: 180 });
     expect(result.kept).toEqual([{ id: 'a', reason: 'arc angle' }]);
+  });
+
+  it('moves an end up to a quarter of a module at step 0.1 too', () => {
+    const result = snapSpec(
+      icon([{ id: 'o', type: 'oval', center: [0, 0], rx: 4, ry: 2 }, arcOn(2, 180)], {
+        grid: { divisions: 12, step: 0.1 },
+      }),
+    );
+    // The end seen at 2 degrees lies about 4 * sin(2 deg) = 0.14 from the axis end at 0.
+    expect(shapeOf(result, 'a')).toMatchObject({ from: 0, to: 180 });
+    expect(result.kept).toEqual([]);
   });
 
   it('treats an oval that rounds to a circle as a circle', () => {
@@ -575,6 +713,25 @@ describe('snapSpec seams', () => {
     expect(shapeOf(result, 'a')).toMatchObject({ from: 30, to: 135 });
   });
 
+  it('still picks a circle that closes the seams at step 0.1', () => {
+    const result = snapSpec(
+      icon(
+        [
+          circleAt('c', [0.04, 0.04], 2.02),
+          arcOf('a', 'c', 0, 90),
+          { id: 'h', type: 'line', from: [2.06, 0.04], to: [6, 0.04] },
+          { id: 'v', type: 'line', from: [0.04, 2.06], to: [0.04, 6] },
+        ],
+        { grid: { divisions: 12, step: 0.1 } },
+      ),
+    );
+    // The ends round to (2.1, 0) and (0, 2.1): the rounded radius 2 misses them by 0.1, radius 2.1
+    // meets both.
+    expect(shapeOf(result, 'c')).toMatchObject({ center: [0, 0], r: 2.1 });
+    expect(shapeOf(result, 'a')).toMatchObject({ from: 0, to: 90 });
+    expect(result.gap).toBe(0);
+  });
+
   it('widens a half turn to a whole diameter', () => {
     const result = snap([
       circleAt('c', [0.2, 0.2], 2.8),
@@ -662,6 +819,24 @@ describe('snapSpec arrow shafts', () => {
     ];
     expect(shapeOf(arrow(skewed), 's')).toMatchObject({ from: [5, -4.5], to: [0, -4.5] });
   });
+
+  it('counts a shortened shaft end in moved as far as plain rounding moves it', () => {
+    const result = snap(
+      [
+        { id: 's', type: 'line', from: [5, -4.5], to: [0.1, -4.5] },
+        { id: 'h', type: 'points', through: head },
+      ],
+      {
+        paint: [
+          { stroke: ['s'], width: 1, color: '#2f75b5' },
+          { fill: 'h', color: '#2f75b5' },
+        ],
+      },
+    );
+    // The end goes to the head base at x 0.5, 0.4 from where it was drawn; rounding alone moves it 0.1.
+    expect(shapeOf(result, 's')).toMatchObject({ to: [0.5, -4.5] });
+    expect(result.moved).toBe(0.1);
+  });
 });
 
 describe('snapSpec scope', () => {
@@ -708,6 +883,89 @@ describe('snapSpec scope', () => {
     const figure = { ...mark, mode: 'figure' };
     expect(() => snapSpec(mark as unknown as SpecInput)).toThrow(/icon/);
     expect(() => snapSpec(figure as unknown as SpecInput)).toThrow(/icon/);
+  });
+});
+
+describe('snapSpec oval ends', () => {
+  // Centre (5.2, -7.8), rx 4.2, ry 1.6 rounds to (5, -8), rx 4, ry 1.5 (4 * 1.6 / 4.2 = 1.52):
+  // right end (9.4, -7.8) -> (9, -8), bottom end (5.2, -9.4) -> (5, -9.5), left end (1, -7.8) -> (1, -8).
+  const lower = { id: 'a', type: 'oval', center: [5.2, -7.8], rx: 4.2, ry: 1.6 };
+
+  it('moves a polyline end and a polygon vertex onto the rounded oval ends', () => {
+    // The upper oval's right end (9.4, -6.6) rounds to (9, -6.5); plain rounding would give x = 9.5.
+    const upper = { id: 'b', type: 'oval', center: [5.2, -6.6], rx: 4.2, ry: 1.6 };
+    const result = snap([
+      lower,
+      upper,
+      polyline('s', [9.4, 9.4], [-7.8, -6.6]),
+      {
+        id: 'h',
+        type: 'points',
+        through: [
+          [9.4, -7.8],
+          [5.2, -9.4],
+          [1, -7.8],
+        ],
+      },
+    ]);
+    expect(shapeOf(result, 'a')).toMatchObject({ center: [5, -8], rx: 4, ry: 1.5 });
+    expect(shapeOf(result, 'b')).toMatchObject({ center: [5, -6.5], rx: 4, ry: 1.5 });
+    expect(shapeOf(result, 's').through).toEqual([
+      [9, -8],
+      [9, -6.5],
+    ]);
+    expect(shapeOf(result, 'h').through).toEqual([
+      [9, -8],
+      [5, -9.5],
+      [1, -8],
+    ]);
+    // Largest move: (9.4, -7.8) -> (9, -8), sqrt(0.2).
+    expect(result.moved).toBe(0.4472);
+  });
+
+  it('moves rect corners, stored or implied, onto the rounded oval ends', () => {
+    // (1, -7.8) is the lower oval's left end -> (1, -8); (9.4, -6.6) the upper's right end -> (9, -6.5);
+    // the implied (9.4, -7.8) and (1, -6.6) agree (x 9, y -8; x 1, y -6.5). Plain rounding gives x 9.5.
+    const result = snap([
+      lower,
+      { id: 'b', type: 'oval', center: [5.2, -6.6], rx: 4.2, ry: 1.6 },
+      {
+        id: 'r',
+        type: 'rect',
+        corners: [
+          [1, -7.8],
+          [9.4, -6.6],
+        ],
+      },
+    ]);
+    expect(shapeOf(result, 'r').corners).toEqual([
+      [1, -8],
+      [9, -6.5],
+    ]);
+  });
+
+  it('rounds a point 0.01 away from an oval end as usual', () => {
+    const result = snap([lower, { id: 'l', type: 'line', from: [9.41, -7.8], to: [9.41, -5] }]);
+    expect(shapeOf(result, 'l')).toMatchObject({ from: [9.5, -8], to: [9.5, -5] });
+  });
+
+  it('rounds a point on the ends of two ovals as usual when the rounded oval ends differ', () => {
+    // Bottom end of centre (9.4, -6.6), rx 2.4, ry 1.2 is (9.4, -7.8); it rounds to centre (9.5, -6.5),
+    // rx 2.5, ry 1 (2.5 * 1.2 / 2.4 = 1.25, the smaller on a tie), so to (9.5, -7.5), not (9, -8).
+    const result = snap([
+      lower,
+      { id: 'c', type: 'oval', center: [9.4, -6.6], rx: 2.4, ry: 1.2 },
+      { id: 'l', type: 'line', from: [9.4, -7.8], to: [9.4, -3] },
+    ]);
+    expect(shapeOf(result, 'c')).toMatchObject({ center: [9.5, -6.5], rx: 2.5, ry: 1 });
+    expect(shapeOf(result, 'l')).toMatchObject({ from: [9.5, -8], to: [9.5, -3] });
+  });
+
+  it('keeps a diagonal by moving the end that is not on an oval end', () => {
+    // (9.4, -7.8) -> (9, -8) and (5.4, -3.8) -> (5.5, -4) give 3.5 across, 4 down. Moving the free
+    // end's x to 5 (0.447 from its original) beats its y to -4.5 (0.707); the oval end stays.
+    const result = snap([lower, { id: 'l', type: 'line', from: [9.4, -7.8], to: [5.4, -3.8] }]);
+    expect(shapeOf(result, 'l')).toMatchObject({ from: [9, -8], to: [5, -4] });
   });
 });
 
@@ -850,7 +1108,7 @@ describe('snapSpec result under the rules', () => {
   it('leaves no off_grid or uneven_steps violation', () => {
     const result = snap([
       polyline('p', [0, 1.3, 2.6, 3.9], [0, 1, 2, 3]),
-      polyline('q', [-4, -2.2, 0.3, 1.9], [-3, -2, -1, 0.1]),
+      polyline('q', [-4, -2.1, -0.2, 1.7], [-3, -2, -1, 0.1]),
       { id: 'c', type: 'circle', center: [1.3, 1], r: 2.3 },
       {
         id: 'r',

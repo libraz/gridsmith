@@ -2,7 +2,8 @@
  * @file Turns a closed ring of lines and circular arcs into an `outline` plus one support shape per
  * piece (a `circle` per arc, a `line` per line). Joints are decided by the kernel's contact test on
  * the supports as written, and the result is built once with `buildChain`, so an accepted ring
- * resolves exactly as checked.
+ * resolves exactly as checked. A ring that fails may be cut at crossings of its lines or have a
+ * cusp arc's circle subtracted; such a result is marked for the caller's fill check.
  */
 
 import { buildChain, ChainError, type ChainInput, type ChainSupport, meet } from '../geom/chain.js';
@@ -269,32 +270,134 @@ function splitAtRepeats(ring: readonly Piece[]): Piece[][] {
   return [[...ring]];
 }
 
-/** One outline of a tidied ring: its id and its boundary polygon in the source direction. */
-export type OutlineLeaf = { id: string; poly: Vec[] };
+type Line = Extract<Piece, { kind: 'line' }>;
+
+/** Where two lines cross farther than {@link TIDY} from each end of both, or null. */
+function crossing(p: Line, q: Line): Vec | null {
+  const d = { x: p.b.x - p.a.x, y: p.b.y - p.a.y };
+  const e = { x: q.b.x - q.a.x, y: q.b.y - q.a.y };
+  const den = d.x * e.y - d.y * e.x;
+  if (Math.abs(den) <= SNAP * Math.hypot(d.x, d.y) * Math.hypot(e.x, e.y)) {
+    return null;
+  }
+  const w = { x: q.a.x - p.a.x, y: q.a.y - p.a.y };
+  const t = (w.x * e.y - w.y * e.x) / den;
+  const u = (w.x * d.y - w.y * d.x) / den;
+  if (t <= 0 || t >= 1 || u <= 0 || u >= 1) {
+    return null;
+  }
+  const x = { x: p.a.x + t * d.x, y: p.a.y + t * d.y };
+  return [p.a, p.b, q.a, q.b].every((end) => dist(end, x) > TIDY) ? x : null;
+}
+
+/** The ring with each crossing of two of its lines cut into both lines, or null when none cross. */
+function crossLines(ring: readonly Piece[]): Piece[] | null {
+  const cuts = ring.map((): Vec[] => []);
+  for (let i = 0; i < ring.length; i++) {
+    for (let j = i + 1; j < ring.length; j++) {
+      const p = ring[i] as Piece;
+      const q = ring[j] as Piece;
+      const x = isArc(p) || isArc(q) ? null : crossing(p, q);
+      if (x !== null) {
+        cuts[i]?.push(x);
+        cuts[j]?.push(x);
+      }
+    }
+  }
+  if (cuts.every((c) => c.length === 0)) {
+    return null;
+  }
+  return ring.flatMap((p, i): Piece[] => {
+    const at = (cuts[i] ?? []).sort((u, v) => dist(p.a, u) - dist(p.a, v));
+    const verts = [p.a, ...at, p.b];
+    return at.length === 0
+      ? [p]
+      : verts.slice(1).map((b, k) => ({ kind: 'line', a: verts[k] as Vec, b }));
+  });
+}
+
+/** Cosine of the largest turn away from a full reversal that still reads as a cusp (1 degree). */
+const CUSP = Math.cos(Math.PI / 180);
+
+/** Unit direction of a line or circular arc at its start (`end` false) or end, along the ring. */
+function heading(p: Piece, end: boolean): Vec {
+  if (!isArc(p)) {
+    const len = dist(p.a, p.b);
+    return { x: (p.b.x - p.a.x) / len, y: (p.b.y - p.a.y) / len };
+  }
+  const at = end ? p.b : p.a;
+  const s = Math.sign(p.dt) / dist(at, p.c);
+  return { x: -(at.y - p.c.y) * s, y: (at.x - p.c.x) * s };
+}
+
+const reverses = (u: Vec, v: Vec): boolean => u.x * v.x + u.y * v.y <= -CUSP;
+
+/** A circle subtracted from an outline: its id, centre and radius as written. */
+export type Minus = { id: string; center: Pt; r: number };
+
+/** One converted ring: its shapes, its signed area and its fill leaf. */
+type Made = { shapes: ShapeInput[]; area: number; leaf: OutlineLeaf };
 
 /**
- * A closed ring of lines and circular arcs (y-up) as one or more outlines. A ring that converts
- * as given is kept whole; otherwise lines of at most 0.02 are dropped, neighbouring arcs differing
- * by fit noise are joined while the result still reaches its neighbours, and the ring is cut where
- * it passes a point twice; cut-off rings at most 0.02 wide on average are dropped. Outlines are
- * `<id>`, `<id>b`, `<id>c`, ... Fails as a whole, with the first failing ring's detail or
- * `area mismatch` when the outlines' area departs from the ring's.
+ * A ring holding one circular arc that turns back against both neighbours (a cusp) and carves
+ * in, as its ring with that arc replaced by the chord less the arc's circle `<id>cap`; or null.
  */
-export function outlinesOf(
-  ring: readonly Piece[],
-  id: string,
-): { shapes: ShapeInput[]; outlines: OutlineLeaf[] } | { detail: string } {
-  const whole = ringArea(ring);
-  const matches = (area: number, expected: number): boolean =>
-    Math.abs(area - expected) <= Math.max(0.02 * Math.abs(expected), 0.05);
-  const untouched = outlineOf(ring, id);
-  if ('shapes' in untouched && matches(Math.sign(whole) * untouched.area, whole)) {
-    return { shapes: untouched.shapes, outlines: [{ id, poly: polygonOf(ring) }] };
+function lessCap(part: readonly Piece[], id: string): Made | null {
+  const n = part.length;
+  const caps = part.flatMap((p, k) =>
+    isArc(p) &&
+    p.circular &&
+    reverses(heading(part[(k + n - 1) % n] as Piece, true), heading(p, false)) &&
+    reverses(heading(p, true), heading(part[(k + 1) % n] as Piece, false))
+      ? [k]
+      : [],
+  );
+  const [k] = caps;
+  const cap = k === undefined ? undefined : part[k];
+  if (caps.length !== 1 || cap === undefined || !isArc(cap)) {
+    return null;
   }
-  const tidy = joinNearArcs(ring.filter((p) => isArc(p) || dist(p.a, p.b) > TIDY));
+  const chords = part.map((p, j): Piece => (j === k ? { kind: 'line', a: p.a, b: p.b } : p));
+  const chordArea = ringArea(chords);
+  const circle = supportOf(cap, `${id}cap`);
+  // A carving cap leaves the rest of its circle outside the chord ring.
+  if (Math.sign(cap.dt) === Math.sign(chordArea) || !circle.inRange) {
+    return null;
+  }
+  const made = outlineOf(chords, id);
+  const { shape } = circle;
+  if (!('shapes' in made) || shape.type !== 'circle') {
+    return null;
+  }
+  const minus: Minus = { id: shape.id, center: shape.center as Pt, r: shape.r as number };
+  return {
+    shapes: [...made.shapes, shape],
+    area: Math.sign(chordArea) * made.area + ringArea(part) - chordArea,
+    leaf: { id, poly: polygonOf(chords), minus },
+  };
+}
+
+/**
+ * One outline of a tidied ring: its id and its boundary polygon in the source direction. With
+ * `minus`, the outline is the chord ring `poly` and the fill is that less the circle.
+ */
+export type OutlineLeaf = { id: string; poly: Vec[]; minus?: Minus };
+
+type Outlines = { shapes: ShapeInput[]; outlines: OutlineLeaf[]; checked?: true };
+
+const areaMatches = (area: number, expected: number): boolean =>
+  Math.abs(area - expected) <= Math.max(0.02 * Math.abs(expected), 0.05);
+
+/** The rings a tidied ring was cut into as outlines, or the first failing ring's detail. */
+function partOutlines(
+  parts: readonly Piece[][],
+  whole: number,
+  id: string,
+  untangle: boolean,
+): Outlines | { detail: string } {
   let expected = whole;
   const kept: Piece[][] = [];
-  for (const part of splitAtRepeats(tidy)) {
+  for (const part of parts) {
     const a = ringArea(part);
     // A split-off ring no wider than TIDY on average is a retraced line.
     if (Math.abs(a) <= (TIDY * perimeter(part)) / 2) {
@@ -309,18 +412,64 @@ export function outlinesOf(
   const shapes: ShapeInput[] = [];
   const outlines: OutlineLeaf[] = [];
   let area = 0;
+  let capped = false;
   for (const [k, part] of kept.entries()) {
     const oid = k === 0 ? id : `${id}${String.fromCharCode(97 + k)}`;
     const made = outlineOf(part, oid);
-    if (!('shapes' in made)) {
-      return made;
+    let done: Made;
+    if ('shapes' in made) {
+      done = {
+        shapes: made.shapes,
+        area: Math.sign(ringArea(part)) * made.area,
+        leaf: { id: oid, poly: polygonOf(part) },
+      };
+    } else {
+      const less = untangle && made.detail === 'direction_mismatch' ? lessCap(part, oid) : null;
+      if (less === null) {
+        return made;
+      }
+      done = less;
+      capped = true;
     }
-    area += Math.sign(ringArea(part)) * made.area;
-    shapes.push(...made.shapes);
-    outlines.push({ id: oid, poly: polygonOf(part) });
+    area += done.area;
+    shapes.push(...done.shapes);
+    outlines.push(done.leaf);
   }
-  if (!matches(area, expected)) {
+  if (!areaMatches(area, expected)) {
     return { detail: 'area mismatch' };
   }
-  return { shapes, outlines };
+  return capped ? { shapes, outlines, checked: true } : { shapes, outlines };
+}
+
+/**
+ * A closed ring of lines and circular arcs (y-up) as one or more outlines. A ring that converts
+ * as given is kept whole; otherwise lines of at most 0.02 are dropped, neighbouring arcs differing
+ * by fit noise are joined while the result still reaches its neighbours, and the ring is cut where
+ * it passes a point twice; cut-off rings at most 0.02 wide on average are dropped. Outlines are
+ * `<id>`, `<id>b`, `<id>c`, ... Fails as a whole, with the first failing ring's detail or
+ * `area mismatch` when the outlines' area departs from the ring's.
+ *
+ * With `untangle`, a ring that still fails is cut where two of its lines cross (farther than 0.02
+ * from their ends), and a ring failing on a carving arc that turns back at both ends becomes its
+ * chord ring less the arc's circle (`minus`). `checked` marks a result that did either; the
+ * caller compares its fill with the source.
+ */
+export function outlinesOf(
+  ring: readonly Piece[],
+  id: string,
+  untangle = true,
+): Outlines | { detail: string } {
+  const whole = ringArea(ring);
+  const untouched = outlineOf(ring, id);
+  if ('shapes' in untouched && areaMatches(Math.sign(whole) * untouched.area, whole)) {
+    return { shapes: untouched.shapes, outlines: [{ id, poly: polygonOf(ring) }] };
+  }
+  const tidy = joinNearArcs(ring.filter((p) => isArc(p) || dist(p.a, p.b) > TIDY));
+  const plain = partOutlines(splitAtRepeats(tidy), whole, id, untangle);
+  const crossed = 'shapes' in plain || !untangle ? null : crossLines(tidy);
+  if (crossed === null) {
+    return plain;
+  }
+  const cut = partOutlines(splitAtRepeats(crossed), whole, id, true);
+  return 'shapes' in cut ? { ...cut, checked: true } : plain;
 }

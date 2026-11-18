@@ -7,10 +7,24 @@
  * snapping to the grid. The arc-centre math lives here; this layer reads `spec` types and `geom`.
  * Bezier curves are fitted with lines and circular arcs (`fit.ts`); a fitted arc is never
  * recognised as part of a rect, and is part of a circle only when the whole closed subpath is.
+ * Filled rings with elliptical arcs become regions over ovals (`compose.ts`), and rings cut at
+ * crossing lines or less a cusp arc's circle become several outlines (`outline.ts`), only when the
+ * element's whole fill still matches; otherwise each such ring is skipped. A fill of several
+ * rings is checked the same way and, when it does not match, kept with a `fill differs` note.
  */
 
 import { type Region, SHAPES_MAX, type SpecInput } from '../spec/schema.js';
-import { outlinesOf } from './outline.js';
+import {
+  type Composed,
+  composeRing,
+  fillMatches,
+  type InsideTest,
+  polygonTest,
+  strokeParts,
+  trace,
+} from './compose.js';
+import { FIT_TOLERANCE } from './fit.js';
+import { type OutlineLeaf, outlinesOf } from './outline.js';
 import { apply, parsePath, parseTransform, type Vec } from './path.js';
 import {
   buildPieces,
@@ -21,6 +35,7 @@ import {
   importPiece,
   isArc,
   openShape,
+  type Piece,
   polygonOf,
   pt,
   round4,
@@ -58,7 +73,8 @@ export type ImportSkip = {
 
 /**
  * A conversion that approximated the source. A `curve fit` note gives the largest fitting
- * deviation, the number of Bezier commands and the number of pieces fitted to them.
+ * deviation, the number of Bezier commands and the number of pieces fitted to them. A note on
+ * the fill of a whole segment, such as `fill differs`, has `subpath` -1.
  */
 export type ImportNote = {
   segment: number;
@@ -67,6 +83,12 @@ export type ImportNote = {
   deviation?: number;
   curves?: number;
   arcs?: number;
+};
+
+/** Options of {@link importSegments}. */
+export type ImportOptions = {
+  /** Largest distance of a fitted line or arc from its Bezier curve, in modules. */
+  fitTolerance?: number;
 };
 
 /** Result of {@link importSegments}; `subpaths` counts every subpath that draws something. */
@@ -110,7 +132,8 @@ const unionOf = (items: Region[]): Region => {
   return unionOf(groups);
 };
 
-type Leaf = { id: string; poly: Vec[] };
+/** A fill leaf: its region and the boundary polygon nesting is decided on. */
+type Leaf = { region: Region; poly: Vec[] };
 
 const BOUNDARY = 1e-6;
 
@@ -155,20 +178,25 @@ function nesting(leaves: readonly Leaf[]): { containers: number[][]; parent: num
   return { containers, parent };
 }
 
-const subtractOf = (id: string, children: Region[]): Region =>
+const subtractOf = (base: Region, children: Region[]): Region =>
   children.length === 0
-    ? id
-    : { subtract: children.length < MAX_OPERANDS ? [id, ...children] : [id, unionOf(children)] };
+    ? base
+    : {
+        subtract: children.length < MAX_OPERANDS ? [base, ...children] : [base, unionOf(children)],
+      };
 
-/** Even-odd nesting as subtract trees. */
-function evenOddRegion(leaves: readonly Leaf[]): Region {
+/** A filled leaf no other filled leaf contains, and its region with the holes inside it. */
+type Root = { leaf: number; region: Region };
+
+/** Even-odd nesting as subtract trees, one per root. */
+function evenOddRoots(leaves: readonly Leaf[]): Root[] {
   const { parent } = nesting(leaves);
   const region = (node: number): Region =>
     subtractOf(
-      leaves[node]?.id ?? '',
+      leaves[node]?.region ?? '',
       parent.flatMap((p, k) => (p === node ? [region(k)] : [])),
     );
-  return unionOf(parent.flatMap((p, k) => (p < 0 ? [region(k)] : [])));
+  return parent.flatMap((p, k) => (p < 0 ? [{ leaf: k, region: region(k) }] : []));
 }
 
 /** Signed area of a y-up polygon: positive when counter-clockwise. */
@@ -183,7 +211,7 @@ function signedArea(poly: readonly Vec[]): number {
 }
 
 /** Nonzero fill: leaves with a non-zero winding number are filled, the rest are holes. */
-function nonZeroRegion(leaves: readonly Leaf[]): Region {
+function nonZeroRoots(leaves: readonly Leaf[]): Root[] {
   const { containers, parent } = nesting(leaves);
   const sign = leaves.map((l) => (signedArea(l.poly) < 0 ? -1 : 1));
   const filled = leaves.map(
@@ -201,13 +229,38 @@ function nonZeroRegion(leaves: readonly Leaf[]): Region {
       k = parent[k] ?? -1;
     }
     if (k >= 0 && filled[k]) {
-      holes.set(k, [...(holes.get(k) ?? []), leaf.id]);
+      holes.set(k, [...(holes.get(k) ?? []), leaf.region]);
     }
   });
-  return unionOf(
-    leaves.flatMap((leaf, k) => (isRoot(k) ? [subtractOf(leaf.id, holes.get(k) ?? [])] : [])),
+  return leaves.flatMap((leaf, k) =>
+    isRoot(k) ? [{ leaf: k, region: subtractOf(leaf.region, holes.get(k) ?? []) }] : [],
   );
 }
+
+/**
+ * The symmetric difference of two roots, which is the fill when they partly overlap and their
+ * windings cancel in the overlap: under evenodd always, under nonzero when they run opposite
+ * ways. Null for any other number of roots or for nonzero roots running the same way.
+ */
+function overlapXor(
+  leaves: readonly Leaf[],
+  roots: readonly Root[],
+  evenOdd: boolean,
+): Region | null {
+  const [a, b] = roots;
+  if (roots.length !== 2 || a === undefined || b === undefined) {
+    return null;
+  }
+  const turn = (r: Root): number => Math.sign(signedArea(leaves[r.leaf]?.poly ?? []));
+  if (!evenOdd && turn(a) === turn(b)) {
+    return null;
+  }
+  return { subtract: [{ union: [a.region, b.region] }, { intersect: [a.region, b.region] }] };
+}
+
+/** Whether a stroked shape is a closed curve whose start the grammar fixes. */
+const curvedRing = (s: ShapeInput): boolean =>
+  s.type === 'circle' || s.type === 'oval' || (s.type === 'rect' && s.r !== undefined);
 
 /** Lower-case `#rrggbb`, `null` for no paint, or `undefined` for an unsupported colour. */
 const colour = (value: string): string | null | undefined => {
@@ -289,9 +342,14 @@ function validate(segments: unknown): ImportSegment[] {
  * Subpaths that cannot be expressed are listed in `skipped` with a reason; the rest still
  * convert. `spec` is `null` when nothing converted or a spec-wide limit is exceeded.
  * Throws on malformed input or path data, naming the segment and character position.
+ * Bezier curves are fitted within `options.fitTolerance` ({@link FIT_TOLERANCE} by default).
  */
-export function importSegments(segments: unknown): ImportResult {
+export function importSegments(segments: unknown, options: ImportOptions = {}): ImportResult {
   const list = validate(segments);
+  const tolerance = options.fitTolerance ?? FIT_TOLERANCE;
+  if (!(tolerance > 0 && Number.isFinite(tolerance))) {
+    throw new Error(`fitTolerance must be a positive number (received: ${tolerance})`);
+  }
   const shapes: ShapeInput[] = [];
   const paint: PaintInput[] = [];
   const skipped: ImportSkip[] = [];
@@ -345,130 +403,219 @@ export function importSegments(segments: unknown): ImportResult {
     const join = (seg.strokeLinejoin ?? 'miter') as 'round' | 'miter' | 'bevel';
     const splittable =
       cap === 'round' && join === 'round' && dash === undefined && fillColor === null;
+    const dashed = dash !== undefined && strokeColor !== null;
 
-    const fillLeaves: { id: string; poly: Vec[] }[] = [];
-    const strokeIds: string[] = [];
-    const dotIds: string[] = [];
-    for (const sub of subpaths) {
-      const id = `s${i}_${sub.index}`;
-      const skip = (reason: string) => {
-        skipped.push({ segment: i, subpath: sub.index, reason });
+    const evenOdd = seg.fillRule === 'evenodd';
+    // One pass over the subpaths; `compose` lets filled rings with elliptical arcs become regions
+    // and lets an unstroked filled ring be cut at its crossings or less a cusp arc's circle.
+    const convert = (compose: boolean) => {
+      const out = {
+        shapes: [] as ShapeInput[],
+        paint: [] as PaintInput[],
+        skipped: [] as ImportSkip[],
+        notes: [] as ImportNote[],
+        mismatch: false,
       };
-      const built = buildPieces(sub, m);
-      if (built === null) {
-        skip('bezier');
-        continue;
-      }
-      const { pieces, ring, closed } = built;
-      const fitNote = (extra?: FitStats) => {
-        const curves = built.curves + (extra?.curves ?? 0);
-        if (curves > 0) {
-          notes.push({
-            segment: i,
-            subpath: sub.index,
-            note: 'curve fit',
-            deviation: round4(Math.max(built.deviation, extra?.deviation ?? 0)),
-            curves,
-            arcs: built.fitted + (extra?.fitted ?? 0),
-          });
-        }
-      };
-      if (pieces.length === 0) {
-        fitNote();
-        if (strokeColor === null || cap === 'butt') {
+      const fillLeaves: Leaf[] = [];
+      const fillRings: Piece[][] = [];
+      const tests = new Map<string, InsideTest>();
+      let composedAny = false;
+      let checkedAny = false;
+      const strokeIds: string[] = [];
+      const dotIds: string[] = [];
+      for (const sub of subpaths) {
+        const id = `s${i}_${sub.index}`;
+        const skip = (reason: string) => {
+          out.skipped.push({ segment: i, subpath: sub.index, reason });
+        };
+        const built = buildPieces(sub, m, tolerance);
+        if (built === null) {
+          skip('bezier');
           continue;
         }
-        if (cap === 'square') {
-          skip('dot');
-          continue;
-        }
-        const center = pt(toUp(apply(m, sub.start)));
-        shapes.push({ id: `${id}d`, type: 'circle', center, r: round4(width / 2) });
-        dotIds.push(`${id}d`);
-        continue;
-      }
-      let fill: Converted | string | null = fillColor === null ? null : closedShape(ring, id);
-      let outlineDetail: string | undefined;
-      let outlineLeaves: { id: string; poly: Vec[] }[] | undefined;
-      if (fill === 'mixed path') {
-        const made = outlinesOf(ring, id);
-        if ('shapes' in made) {
-          fill = { shapes: made.shapes, ids: made.outlines.map((o) => o.id), area: true };
-          outlineLeaves = made.outlines;
-        } else {
-          outlineDetail = made.detail;
-        }
-      }
-      let stroke: Converted | string | null = null;
-      if (strokeColor !== null) {
-        if (closed) {
-          stroke = fill ?? closedShape(pieces, id);
-          // A round, unfilled ring draws the same when split into parts.
-          if (stroke === 'mixed path' && splittable) {
-            stroke = openShape(pieces, id, true, built.fitted);
+        const { pieces, ring, closed } = built;
+        const fitNote = (extra?: FitStats) => {
+          const curves = built.curves + (extra?.curves ?? 0);
+          if (curves > 0) {
+            out.notes.push({
+              segment: i,
+              subpath: sub.index,
+              note: 'curve fit',
+              deviation: round4(Math.max(built.deviation, extra?.deviation ?? 0)),
+              curves,
+              arcs: built.fitted + (extra?.fitted ?? 0),
+            });
           }
-        } else if (fill !== null && pieces.some(isArc)) {
-          stroke = 'mixed path';
-        } else {
-          stroke = openShape(pieces, id, splittable, built.fitted);
+        };
+        if (pieces.length === 0) {
+          fitNote();
+          if (strokeColor === null || cap === 'butt') {
+            continue;
+          }
+          if (cap === 'square') {
+            skip('dot');
+            continue;
+          }
+          const center = pt(toUp(apply(m, sub.start)));
+          out.shapes.push({ id: `${id}d`, type: 'circle', center, r: round4(width / 2) });
+          dotIds.push(`${id}d`);
+          continue;
+        }
+        let fill: Converted | string | null =
+          fillColor === null ? null : closedShape(ring, id, dashed);
+        let outlineDetail: string | undefined;
+        let outlineLeaves: OutlineLeaf[] | undefined;
+        let composed: Composed | null = null;
+        if (fill === 'mixed path') {
+          // A stroke would follow the cut rings and the chord of a cap, not the source path.
+          const made = outlinesOf(ring, id, compose && strokeColor === null);
+          if ('shapes' in made) {
+            fill = { shapes: made.shapes, ids: made.outlines.map((o) => o.id), area: true };
+            outlineLeaves = made.outlines;
+            checkedAny ||= made.checked === true;
+          } else {
+            composed = compose && made.detail === 'ellipse' ? composeRing(ring, id) : null;
+            if (composed === null) {
+              outlineDetail = made.detail;
+            } else {
+              fill = { shapes: composed.shapes, ids: [], area: true };
+            }
+          }
+        }
+        let stroke: Converted | string | null = null;
+        if (strokeColor !== null) {
+          if (composed !== null) {
+            stroke = 'mixed path';
+          } else if (closed) {
+            stroke = fill ?? closedShape(pieces, id, dashed);
+            // A round, unfilled ring draws the same when split into parts.
+            if (stroke === 'mixed path' && splittable) {
+              stroke = openShape(pieces, id, true, built.fitted, tolerance);
+            }
+          } else if (fill !== null && pieces.some(isArc)) {
+            stroke = 'mixed path';
+          } else {
+            stroke = openShape(pieces, id, splittable, built.fitted, tolerance);
+          }
+          // Elliptical arcs nothing else could draw become arcs on ovals.
+          if (stroke === 'mixed path' && dash === undefined) {
+            const round = cap === 'round' && join === 'round';
+            stroke = strokeParts(pieces, id, closed, round, composed?.ovals) ?? stroke;
+          }
+        }
+        fitNote(typeof stroke === 'string' ? undefined : stroke?.fit);
+        if (typeof fill === 'string' || typeof stroke === 'string') {
+          const reason = typeof fill === 'string' ? fill : (stroke as string);
+          if (reason === 'mixed path') {
+            const drawn = (fillColor === null ? pieces : ring).map(importPiece);
+            out.skipped.push({
+              segment: i,
+              subpath: sub.index,
+              reason,
+              ...(outlineDetail === undefined ? {} : { detail: outlineDetail }),
+              pieces: drawn,
+            });
+          } else {
+            skip(reason);
+          }
+          continue;
+        }
+        if (composed !== null) {
+          // The ovals precede the arcs of the stroke drawn on them.
+          out.shapes.push(...composed.shapes);
+          fillLeaves.push({ region: composed.region, poly: polygonOf(ring) });
+          fillRings.push(ring);
+          for (const [k, test] of composed.tests) {
+            tests.set(k, test);
+          }
+          composedAny = true;
+        }
+        // An open stroked polyline that is also filled is filled as its closed polygon.
+        const separate = fill !== null && stroke !== null && fill !== stroke;
+        if (stroke !== null) {
+          out.shapes.push(...stroke.shapes);
+          strokeIds.push(...stroke.ids);
+        }
+        if (fill?.area && composed === null) {
+          const fillId = separate ? `${id}f` : id;
+          if (separate) {
+            out.shapes.push(...fill.shapes.map((s) => ({ ...s, id: fillId })));
+          } else if (stroke === null) {
+            out.shapes.push(...fill.shapes);
+          }
+          if (outlineLeaves === undefined) {
+            fillLeaves.push({ region: fillId, poly: polygonOf(ring) });
+            tests.set(fillId, polygonTest(trace(ring)));
+          } else {
+            for (const o of outlineLeaves) {
+              tests.set(o.id, polygonTest(o.poly));
+              if (o.minus === undefined) {
+                fillLeaves.push({ region: o.id, poly: o.poly });
+                continue;
+              }
+              const { id: cap, center, r } = o.minus;
+              tests.set(cap, (p) => Math.hypot(p.x - center[0], p.y - center[1]) < r);
+              fillLeaves.push({ region: { subtract: [o.id, cap] }, poly: o.poly });
+            }
+          }
+          fillRings.push(ring);
+        }
+        const note = (fill ?? stroke)?.note;
+        if (note !== undefined) {
+          out.notes.push({ segment: i, subpath: sub.index, note });
+        }
+        // A dashed closed curve starts its pattern where the shape starts, not where the path did.
+        if (dashed && stroke?.shapes.some((s) => stroke.ids.includes(s.id) && curvedRing(s))) {
+          out.notes.push({ segment: i, subpath: sub.index, note: 'dash phase' });
         }
       }
-      fitNote(typeof stroke === 'string' ? undefined : stroke?.fit);
-      if (typeof fill === 'string' || typeof stroke === 'string') {
-        const reason = typeof fill === 'string' ? fill : (stroke as string);
-        if (reason === 'mixed path') {
-          const drawn = (fillColor === null ? pieces : ring).map(importPiece);
-          skipped.push({
-            segment: i,
-            subpath: sub.index,
-            reason,
-            ...(outlineDetail === undefined ? {} : { detail: outlineDetail }),
-            pieces: drawn,
-          });
-        } else {
-          skip(reason);
-        }
-        continue;
-      }
-      // An open stroked polyline that is also filled is filled as its closed polygon.
-      const separate = fill !== null && stroke !== null && fill !== stroke;
-      if (stroke !== null) {
-        shapes.push(...stroke.shapes);
-        strokeIds.push(...stroke.ids);
-      }
-      if (fill?.area) {
-        const fillId = separate ? `${id}f` : id;
-        if (separate) {
-          shapes.push(...fill.shapes.map((s) => ({ ...s, id: fillId })));
-        } else if (stroke === null) {
-          shapes.push(...fill.shapes);
-        }
-        fillLeaves.push(...(outlineLeaves ?? [{ id: fillId, poly: polygonOf(ring) }]));
-      }
-      const note = (fill ?? stroke)?.note;
-      if (note !== undefined) {
-        notes.push({ segment: i, subpath: sub.index, note });
-      }
-    }
 
-    if (fillColor !== null && fillLeaves.length > 0) {
-      const region =
-        seg.fillRule === 'evenodd' ? evenOddRegion(fillLeaves) : nonZeroRegion(fillLeaves);
-      paint.push({ fill: region, color: fillColor });
+      if (fillColor !== null && fillLeaves.length > 0) {
+        const roots = evenOdd ? evenOddRoots(fillLeaves) : nonZeroRoots(fillLeaves);
+        let region = unionOf(roots.map((r) => r.region));
+        // Composed rings stand in whole ovals for their arcs, a cap its whole circle, and nesting
+        // is decided on vertices: the element's fill must still match the source.
+        if (
+          (composedAny || checkedAny || fillRings.length > 1) &&
+          !fillMatches(fillRings, evenOdd, region, tests)
+        ) {
+          if (composedAny || checkedAny) {
+            out.mismatch = true;
+            return out;
+          }
+          const xor = overlapXor(fillLeaves, roots, evenOdd);
+          if (xor !== null && fillMatches(fillRings, evenOdd, xor, tests)) {
+            region = xor;
+          } else {
+            out.notes.push({ segment: i, subpath: -1, note: 'fill differs' });
+          }
+        }
+        out.paint.push({ fill: region, color: fillColor });
+      }
+      if (strokeColor !== null && strokeIds.length > 0) {
+        out.paint.push({
+          stroke: strokeIds,
+          width,
+          color: strokeColor,
+          cap,
+          join,
+          ...(dash === undefined ? {} : { dash }),
+        });
+      }
+      if (strokeColor !== null && dotIds.length > 0) {
+        out.paint.push({ fill: unionOf(dotIds), color: strokeColor });
+      }
+      return out;
+    };
+
+    let done = convert(true);
+    if (done.mismatch) {
+      done = convert(false);
     }
-    if (strokeColor !== null && strokeIds.length > 0) {
-      paint.push({
-        stroke: strokeIds,
-        width,
-        color: strokeColor,
-        cap,
-        join,
-        ...(dash === undefined ? {} : { dash }),
-      });
-    }
-    if (strokeColor !== null && dotIds.length > 0) {
-      paint.push({ fill: unionOf(dotIds), color: strokeColor });
-    }
+    shapes.push(...done.shapes);
+    paint.push(...done.paint);
+    skipped.push(...done.skipped);
+    notes.push(...done.notes);
   });
 
   let spec: SpecInput | null =

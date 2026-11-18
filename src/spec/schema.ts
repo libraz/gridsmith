@@ -27,6 +27,9 @@ export const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 /** Id reserved as the exception target for whole-spec rules. */
 export const RESERVED_ID = 'spec';
 
+/** Grid steps an icon may choose with `grid.step`, in modules; the first is the default. */
+export const ICON_GRID_STEPS = [0.5, 0.25, 0.1] as const;
+
 export const LENGTH_MIN = 0.05;
 export const LENGTH_MAX = 64;
 export const WIDTH_MIN = 0.005;
@@ -723,6 +726,11 @@ const specObject = z.strictObject({
       error: complain('divisions', '4, 6 or 8, or 12 for an icon'),
     }),
     margin: intIn('margin', 0, 4).optional(),
+    step: z
+      .literal([...ICON_GRID_STEPS], {
+        error: complain('step', `${ICON_GRID_STEPS.join(', ')}, when mode is "icon"`),
+      })
+      .optional(),
   }),
   concept: z
     .string({ error: complain('concept', 'a string of 1 to 400 characters') })
@@ -757,6 +765,13 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
     add(
       ['grid', 'margin'],
       `margin is invalid (received: ${margin}; allowed: 0 or omitted when mode is "icon")`,
+    );
+  }
+
+  if (spec.mode !== 'icon' && spec.grid.step !== undefined) {
+    add(
+      ['grid', 'step'],
+      `step is invalid (received: ${spec.grid.step}; allowed: omitted unless mode is "icon")`,
     );
   }
 
@@ -1127,6 +1142,10 @@ export const specSchema = specObject.superRefine(checkSpec).transform((spec) => 
   ...spec,
   grid: { ...spec.grid, margin: spec.grid.margin ?? (spec.mode === 'icon' ? 0 : 1) },
 }));
+
+/** The grid step of an icon spec: `grid.step`, or 0.5 when omitted. */
+export const iconGridStep = (grid: { step?: number | undefined }): number =>
+  grid.step ?? ICON_GRID_STEPS[0];
 
 export type Spec = z.infer<typeof specSchema>;
 export type SpecInput = z.input<typeof specSchema>;

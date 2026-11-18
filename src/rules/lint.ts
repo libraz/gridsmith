@@ -6,6 +6,8 @@ import type { ArcGeometry, ResolvedModel } from '../resolve/resolve.js';
 import { lengthSignature } from '../spec/length.js';
 import type { Point, RuleId, Shape, Spec } from '../spec/schema.js';
 import {
+  ICON_GRID_STEPS,
+  iconGridStep,
   isCircleLike,
   paintReferences,
   RESERVED_ID,
@@ -39,10 +41,11 @@ export const RULES = {
   off_grid: {
     description:
       'Numeric point coordinates and numeric lengths (radii, rect.r, oval rx and ry) must be multiples of 0.5 module ' +
-      '(a rect.r of half its shorter side is exempt) in a mark and an icon and 0.25 module in a figure. Length expressions, references, widths, dashes ' +
+      'in a mark, 0.25 in a figure and grid.step in an icon (0.5, 0.25 or 0.1; default 0.5); a rect.r of half its shorter side is exempt. Length expressions, references, widths, dashes ' +
       'and anything inside near/toward are exempt. Target: the element id.',
     modes: ['mark', 'figure', 'icon'],
-    gridStep: { mark: 0.5, figure: 0.25, icon: 0.5 },
+    gridStep: { mark: 0.5, figure: 0.25 },
+    iconSteps: ICON_GRID_STEPS,
     tolerance: 1e-9,
   },
   angle: {
@@ -248,7 +251,7 @@ function checkCircleCount(spec: Spec): Finding[] {
 
 function checkOffGrid(spec: Spec): Finding[] {
   const { gridStep, tolerance } = RULES.off_grid;
-  const step = gridStep[spec.mode];
+  const step = spec.mode === 'icon' ? iconGridStep(spec.grid) : gridStep[spec.mode];
   const findings: Finding[] = [];
   for (const shape of spec.shapes) {
     const problems: string[] = [];

@@ -57,11 +57,24 @@ describe('fitCubic', () => {
     });
   });
 
-  it('fits a nearly straight curve, bulging 0.05 over a chord of 8, with its chord', () => {
+  it('halves a nearly straight curve, bulging 0.05 over a chord of 8, into two chords', () => {
+    // x = 8t and y = 0.2t(1 - t): a parabola. The arc through it has radius about 160, so the
+    // curve is halved at (4, 0.05) and each half bulges 0.0125 over its chord.
     const h = 0.05 / 0.75;
     const result = fitted(v(0, 0), v(8 / 3, h), v(16 / 3, h), v(8, 0));
-    expect(result.pieces).toEqual([{ kind: 'line', a: v(0, 0), b: v(8, 0) }]);
-    expect(result.deviation).toBeCloseTo(0.05, 6);
+    expect((16 + 0.05 ** 2) / (2 * 0.05)).toBeGreaterThan(FIT_RADIUS_MAX);
+    expect(result.pieces.map((p) => p.kind)).toEqual(['line', 'line']);
+    expect(result.pieces[0]?.b.x).toBeCloseTo(4, 12);
+    expect(result.pieces[0]?.b.y).toBeCloseTo(0.05, 12);
+    expectChain(result, v(0, 0), v(8, 0));
+    expect(result.deviation).toBeCloseTo(0.0125, 5);
+  });
+
+  it('fits the same curve with its chord at a tolerance of 0.1', () => {
+    const h = 0.05 / 0.75;
+    const result = fitCubic(v(0, 0), v(8 / 3, h), v(16 / 3, h), v(8, 0), 0.1);
+    expect(result?.pieces).toEqual([{ kind: 'line', a: v(0, 0), b: v(8, 0) }]);
+    expect(result?.deviation).toBeCloseTo(0.05, 6);
   });
 
   it('returns no pieces for a curve collapsed to a point', () => {

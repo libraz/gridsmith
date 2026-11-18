@@ -13,7 +13,7 @@ It is an MCP server over stdio.
 | `gridsmith_guide` | `topic`: `overview` (default), `spec`, `rules`, `examples` or `icon` | The cheat sheet, the JSON Schema of a spec, the rule table, the complete example specs, or the icon-mode reference |
 | `gridsmith_render` | `spec` (an object, or an absolute path to a JSON file of at most 256 KB), `views` and `underlay` (both optional) | A JSON report and the requested views. Writes nothing |
 | `gridsmith_export` | `spec`, `dir` (absolute), `name`, `overwrite` (optional) | The files written to `dir` |
-| `gridsmith_import` | `segments` (1 to 64 path segments of an icon), `snap` (optional, default true) | An icon spec, its status, violations and the pixel difference from the original. Writes nothing |
+| `gridsmith_import` | `segments` (1 to 64 path segments of an icon), `snap` (optional, default true), `step` (optional: 0.5, 0.25 or 0.1) | An icon spec, its status, violations and the pixel difference from the original. Writes nothing |
 
 **`gridsmith_render`** returns a JSON report (resolved geometry, violations, applied exceptions, near-tangent hints, per-layer statistics, `exportable`) followed by the views in the order requested. PNG views are `sheet` (construction sheet), `final` (512 px), `sizes` (a mark: 64, 32 and 16 px side by side; an icon: a pixel preview, see below; not for a figure), `guides` (the final drawing with every construction element over it, 512 px) and `match` (the drawing against an `underlay` image, 512 px; see below). SVG views are returned as text: `svg`, `sheet_svg` and `guides_svg`. An icon also has `segments`, its path data as a JSON string. A text view longer than 60000 characters is not returned; it is listed in `truncated` instead. The default is `sheet` and `sizes` for a mark or an icon, `sheet` and `final` for a figure. Rule violations are reported and the drawing is still produced.
 
@@ -54,7 +54,7 @@ The files in `docs/gallery/` are generated; do not edit them by hand.
 
 A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `concept` and `exceptions`. `gridsmith_guide` with `spec` returns the exact schema.
 
-**Grid and coordinates.** `grid.divisions` is 4, 6 or 8 (12 for an icon) and sets R, the radius of the unit circle in modules. `grid.margin` is 0 to 4 modules (default 1; an icon takes only 0, its default), so the canvas is a square of half side R + margin. The origin is the canvas centre, x points right and y up. Angles are degrees counter-clockwise from +x.
+**Grid and coordinates.** `grid.divisions` is 4, 6 or 8 (12 for an icon) and sets R, the radius of the unit circle in modules. `grid.margin` is 0 to 4 modules (default 1; an icon takes only 0, its default), so the canvas is a square of half side R + margin. An icon may set `grid.step` to 0.5 (the default), 0.25 or 0.1: the step its numeric coordinates and radii sit on. The origin is the canvas centre, x points right and y up. Angles are degrees counter-clockwise from +x.
 
 **Elements** (`shapes`, at most 256; each refers only to earlier ones).
 
@@ -91,7 +91,7 @@ A mark takes only `fill` layers, a figure only `stroke` and `erase`, and an icon
 |---|---|
 | `ratio_count` | At most 3 distinct ratios across radii and widths; "R/2" and "R*2" count once. Not applied to an icon |
 | `circle_count` | At most 8 circles in a mark, 16 in a figure, 40 in an icon; arcs do not count. A mark whose fill reaches an `outline` may have 40 |
-| `off_grid` | Numeric coordinates and radii are multiples of 0.5 module (mark, icon) or 0.25 (figure); stroke widths and `dash` are exempt |
+| `off_grid` | Numeric coordinates and radii are multiples of 0.5 module (mark), 0.25 (figure) or `grid.step` (icon, default 0.5); stroke widths and `dash` are exempt |
 | `angle` | Angles, including `oval.rotate`, are multiples of 180/n for n in 2, 3, 4, 5, 6, 8, 10, 12, 20, 24; `polygon.n` and `repeat.n` come from the same set |
 | `off_canvas` | Everything drawn stays inside the canvas; a stroke counts half its width beyond its geometry |
 | `empty_fill` | A fill layer produces at least one closed outline (mark, icon) |
@@ -126,7 +126,7 @@ The `sizes` view of an icon draws the final SVG at 24 px and at 16 px on white a
   ] }
 ```
 
-`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs (a single elliptical arc becomes an arc on an oval), a filled closed path of lines and circular arcs becomes an `outline` with its support circles and lines, and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`, with `detail` when it could not become an outline) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
+`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs within 0.025 units (0.05 or 0.1 when a finer fit needs more than 40 circles), and a single elliptical arc becomes an arc on an oval. A filled closed path of lines and circular arcs becomes an `outline` with its support circles and lines; when the path is not stroked, one whose lines cross becomes an outline per loop, and an arc that turns back at both ends becomes its chord less its circle. A filled path with elliptical arcs becomes its chords united with, or less, the `oval`s of those arcs (its stroke drawn as lines and `arc`s on those ovals). The cut, capped and oval forms are used only when they fill the same area as the source. The spec is then rounded to a grid step, `step` or else the one whose drawing stays closest to the original (returned as `snap.step`). Polylines evenly stepped in the source get equal steps, the others keep theirs with an `uneven_steps` exception (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`, with `detail` when it could not become an outline) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
 
 ## Gallery
 

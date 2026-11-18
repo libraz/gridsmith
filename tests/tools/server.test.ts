@@ -126,7 +126,7 @@ describe('tools/list', () => {
     expect(keys('gridsmith_guide')).toEqual(['topic']);
     expect(keys('gridsmith_render')).toEqual(['spec', 'underlay', 'views']);
     expect(keys('gridsmith_export')).toEqual(['dir', 'name', 'overwrite', 'spec']);
-    expect(keys('gridsmith_import')).toEqual(['segments', 'snap']);
+    expect(keys('gridsmith_import')).toEqual(['segments', 'snap', 'step']);
     for (const tool of tools) {
       expect(tool.inputSchema.required ?? []).toEqual([]);
     }

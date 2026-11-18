@@ -4,7 +4,7 @@
  */
 
 import type { SpecInput } from '../spec/schema.js';
-import { type FitPiece, fitCubic } from './fit.js';
+import { FIT_TOLERANCE, type FitPiece, fitCubic } from './fit.js';
 import { apply, type Matrix, type RawSubpath, type Vec } from './path.js';
 
 /**
@@ -51,8 +51,8 @@ const ROUNDED_TOL = 0.02;
 const MAX_POINTS = 32;
 const ARC_STEPS = 16;
 const HALF = 12;
-/** Fitted pieces allowed per subpath, so one curve cannot exhaust the shape limit. */
-const MAX_FIT_PIECES = 16;
+/** Fitted pieces allowed per subpath: the piece limit of one outline. */
+const MAX_FIT_PIECES = 64;
 /** Tolerance on centres and radii when fitted arcs close into a circle. */
 const FIT_CIRCLE_TOL = 0.1;
 
@@ -163,9 +163,9 @@ type Built = {
 /**
  * Builds y-up pieces with transforms baked in, curves fitted and zero-length pieces dropped.
  * `ring` is the boundary a fill sees: `pieces` plus the implicit closing edge. Null when a curve
- * cannot be fitted or the fits need more than {@link MAX_FIT_PIECES} pieces.
+ * cannot be fitted within `tolerance` or the fits need more than {@link MAX_FIT_PIECES} pieces.
  */
-export function buildPieces(sub: RawSubpath, m: Matrix): Built | null {
+export function buildPieces(sub: RawSubpath, m: Matrix, tolerance = FIT_TOLERANCE): Built | null {
   const scale = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
   const turn = degrees(Math.atan2(m[1], m[0]));
   const all: Piece[] = [];
@@ -174,7 +174,13 @@ export function buildPieces(sub: RawSubpath, m: Matrix): Built | null {
   for (const cmd of sub.cmds) {
     const to = apply(m, cmd.to);
     if (cmd.kind === 'C') {
-      const curve = fitCubic(toUp(prev), toUp(apply(m, cmd.c1)), toUp(apply(m, cmd.c2)), toUp(to));
+      const curve = fitCubic(
+        toUp(prev),
+        toUp(apply(m, cmd.c1)),
+        toUp(apply(m, cmd.c2)),
+        toUp(to),
+        tolerance,
+      );
       if (curve === null) {
         return null;
       }
@@ -278,7 +284,8 @@ const arcShapes = (arc: Arc, id: string): ShapeInput[] => {
   ];
 };
 
-const lineShape = (verts: readonly Vec[], id: string): ShapeInput | string => {
+/** A `line` for two vertices, else a `polyline`; a reason when there are too many. */
+export const lineShape = (verts: readonly Vec[], id: string): ShapeInput | string => {
   if (verts.length > MAX_POINTS) {
     return 'too many points';
   }
@@ -366,7 +373,7 @@ export type Converted = {
 };
 
 /** Point and tangent of an ellipse piece at parameter `t`, y-up. */
-function ellipseAt(arc: Arc, t: number): { p: Vec; d: Vec } {
+export function ellipseAt(arc: Arc, t: number): { p: Vec; d: Vec } {
   const cos = Math.cos(arc.phi);
   const sin = Math.sin(arc.phi);
   const turn = (x: number, y: number): Vec => ({ x: cos * x - sin * y, y: sin * x + cos * y });
@@ -379,11 +386,12 @@ function ellipseAt(arc: Arc, t: number): { p: Vec; d: Vec } {
 
 /**
  * Replaces each elliptical arc by fitted circular arcs, one cubic per span of at most 90 degrees.
- * Null when a span cannot be fitted or the fits need more than `room` pieces.
+ * Null when a span cannot be fitted within `tolerance` or the fits need more than `room` pieces.
  */
 function fitEllipses(
   pieces: readonly Piece[],
   room: number,
+  tolerance: number,
 ): { pieces: Piece[]; fit: FitStats } | null {
   const out: Piece[] = [];
   const fit: FitStats = { curves: 0, fitted: 0, deviation: 0 };
@@ -403,6 +411,7 @@ function fitEllipses(
         { x: s.p.x + k * s.d.x, y: s.p.y + k * s.d.y },
         { x: e.p.x - k * e.d.x, y: e.p.y - k * e.d.y },
         i === spans - 1 ? piece.b : e.p,
+        tolerance,
       );
       if (curve === null) {
         return null;
@@ -436,8 +445,70 @@ function fittedCircle(pieces: readonly Piece[], id: string): Converted | null {
     : null;
 }
 
-/** Closed subpath (or the implicitly closed fill of one) as one element. */
-export function closedShape(pieces: readonly Piece[], id: string): Converted | string {
+/** Degrees folded into (-90, 90]. */
+const foldTurn = (deg: number): number => {
+  const r = deg % 180;
+  return r > 90 ? r - 180 : r <= -90 ? r + 180 : r;
+};
+
+/**
+ * Where two arcs closing over one chord reach: the centre of their extent and its half width
+ * across the chord. Each arc lies farthest from the chord at its parameter midpoint.
+ */
+function pairSpan(p: Arc, q: Arc): { centre: Vec; across: number } {
+  const len = dist(p.a, p.b);
+  const u = { x: (p.b.x - p.a.x) / len, y: (p.b.y - p.a.y) / len };
+  const side = (arc: Arc): number => {
+    const m = ellipseAt(arc, arc.t1 + arc.dt / 2).p;
+    return u.x * (m.y - p.a.y) - u.y * (m.x - p.a.x);
+  };
+  const [sp, sq] = [side(p), side(q)];
+  const c = mid(p.a, p.b);
+  const shift = (sp + sq) / 2;
+  return { centre: { x: c.x - u.y * shift, y: c.y + u.x * shift }, across: Math.abs(sp - sq) / 2 };
+}
+
+/**
+ * An arc pair as one oval with radius `rx` along `turn` (radians), or as a circle of the mean
+ * radius when the radii are too close for an oval.
+ */
+function pairShape(
+  id: string,
+  centre: Vec,
+  rx: number,
+  ry: number,
+  turn: number,
+  gap: number,
+): Converted {
+  const shape: ShapeInput =
+    Math.abs(rx - ry) < MIN_OVAL_DIFF
+      ? { id, type: 'circle', center: pt(centre), r: round4((rx + ry) / 2) }
+      : {
+          id,
+          type: 'oval',
+          center: pt(centre),
+          rx: round4(rx),
+          ry: round4(ry),
+          rotate: round4(foldTurn(degrees(turn))),
+        };
+  return {
+    shapes: [shape],
+    ids: [id],
+    area: true,
+    ...(gap > SAME_POINT ? { note: 'rounded arc pair' } : {}),
+  };
+}
+
+/**
+ * Closed subpath (or the implicitly closed fill of one) as one element. A `dashed` stroke keeps
+ * a sharp axis-parallel ring as `points` in path order, since its pattern starts at the first
+ * vertex and runs along the path.
+ */
+export function closedShape(
+  pieces: readonly Piece[],
+  id: string,
+  dashed = false,
+): Converted | string {
   const arcs = pieces.filter(isArc);
   if (arcs.length === 0) {
     const verts = pieces.map((p) => p.a);
@@ -458,7 +529,7 @@ export function closedShape(pieces: readonly Piece[], id: string): Converted | s
     const axis =
       verts.length === 4 &&
       [0, 1, 2, 3].every((k) => (k % 2 === (flat(0) ? 0 : 1) ? flat(k) : upright(k)));
-    if (axis) {
+    if (axis && !dashed) {
       const corners: [Pt, Pt] = [
         [round4(Math.min(...xs)), round4(Math.min(...ys))],
         [round4(Math.max(...xs)), round4(Math.max(...ys))],
@@ -474,21 +545,16 @@ export function closedShape(pieces: readonly Piece[], id: string): Converted | s
   const [p, q] = arcs;
   if (pieces.length === 2 && p !== undefined && q !== undefined) {
     const sameTurn = Math.sign(p.dt) === Math.sign(q.dt);
-    const centre = mid(p.a, p.b);
+    const chord = Math.atan2(p.b.y - p.a.y, p.b.x - p.a.x);
     if (p.circular && q.circular && sameTurn && Math.abs(p.givenRx - q.givenRx) <= SHAPE_TOL) {
       const gap = Math.abs(dist(p.a, p.b) - 2 * p.givenRx);
       if (gap <= ROUNDED_TOL) {
-        const shape: ShapeInput = { id, type: 'circle', center: pt(centre), r: round4(p.givenRx) };
-        return {
-          shapes: [shape],
-          ids: [id],
-          area: true,
-          ...(gap > SAME_POINT ? { note: 'rounded arc pair' } : {}),
-        };
+        const span = pairSpan(p, q);
+        return pairShape(id, span.centre, p.rx, span.across, chord, gap);
       }
     }
     // The chord must be a diameter of the ellipse, measured along its own direction.
-    const along = Math.atan2(p.b.y - p.a.y, p.b.x - p.a.x) - p.phi;
+    const along = chord - p.phi;
     const diameter =
       2 / Math.sqrt((Math.cos(along) / p.givenRx) ** 2 + (Math.sin(along) / p.givenRy) ** 2);
     const gap = Math.abs(dist(p.a, p.b) - diameter);
@@ -501,34 +567,26 @@ export function closedShape(pieces: readonly Piece[], id: string): Converted | s
       Math.abs(p.givenRy - q.givenRy) <= SHAPE_TOL &&
       gap <= ROUNDED_TOL
     ) {
-      let rotate = degrees(p.phi) % 180;
-      rotate = rotate > 90 ? rotate - 180 : rotate <= -90 ? rotate + 180 : rotate;
-      const shape: ShapeInput = {
-        id,
-        type: 'oval',
-        center: pt(centre),
-        rx: round4(p.givenRx),
-        ry: round4(p.givenRy),
-        rotate: round4(rotate),
-      };
-      return {
-        shapes: [shape],
-        ids: [id],
-        area: true,
-        ...(gap > SAME_POINT ? { note: 'rounded arc pair' } : {}),
-      };
+      // A chord along one axis of the ellipse keeps that radius; the arcs set the other one.
+      const onX = Math.abs(Math.sin(along)) <= SHAPE_TOL;
+      if (onX || Math.abs(Math.cos(along)) <= SHAPE_TOL) {
+        const span = pairSpan(p, q);
+        const [rx, ry] = onX ? [p.rx, span.across] : [span.across, p.ry];
+        return pairShape(id, span.centre, rx, ry, p.phi, gap);
+      }
+      return pairShape(id, mid(p.a, p.b), p.givenRx, p.givenRy, p.phi, gap);
     }
   }
   const rect = roundedRect(pieces);
   if (rect === null) {
     return 'mixed path';
   }
-  const shape: ShapeInput = {
-    id,
-    type: 'rect',
-    corners: [pt(rect.min), pt(rect.max)],
-    r: round4(rect.r),
-  };
+  // Corners meeting with no straight side between them close into a circle.
+  const round =
+    Math.max(rect.max.x - rect.min.x, rect.max.y - rect.min.y) - 2 * rect.r <= SHAPE_TOL;
+  const shape: ShapeInput = round
+    ? { id, type: 'circle', center: pt(mid(rect.min, rect.max)), r: round4(rect.r) }
+    : { id, type: 'rect', corners: [pt(rect.min), pt(rect.max)], r: round4(rect.r) };
   return {
     shapes: [shape],
     ids: [id],
@@ -541,7 +599,7 @@ export function closedShape(pieces: readonly Piece[], id: string): Converted | s
 const MIN_OVAL_DIFF = 0.05;
 const MAX_OVAL_RATIO = 4;
 
-const isOvalArc = (p: Piece): p is Arc => {
+export const isOvalArc = (p: Piece): p is Arc => {
   if (!isArc(p) || p.circular || p.fitted) {
     return false;
   }
@@ -550,7 +608,7 @@ const isOvalArc = (p: Piece): p is Arc => {
 };
 
 /** A lone elliptical arc as an `oval` and a counter-clockwise `arc` on it. */
-function ovalArcShapes(arc: Arc, id: string): Converted {
+export function ovalArcShapes(arc: Arc, id: string): Converted {
   const ccw = arc.dt > 0;
   let rotate = degrees(arc.phi) % 180;
   rotate = rotate > 90 ? rotate - 180 : rotate <= -90 ? rotate + 180 : rotate;
@@ -574,12 +632,16 @@ function ovalArcShapes(arc: Arc, id: string): Converted {
   return { shapes, ids: [id], area: false };
 }
 
-/** Stroked subpath, open or a closed round ring: lines, one arc, or line/arc parts. */
+/**
+ * Stroked subpath, open or a closed round ring: lines, one arc, or line/arc parts. Elliptical
+ * arcs are fitted within `tolerance`, into the room `fitted` leaves.
+ */
 export function openShape(
   source: readonly Piece[],
   id: string,
   splittable: boolean,
   fitted = 0,
+  tolerance = FIT_TOLERANCE,
 ): Converted | string {
   const lone = source.length === 1 ? source[0] : undefined;
   if (lone !== undefined && isOvalArc(lone)) {
@@ -588,7 +650,7 @@ export function openShape(
   let pieces = source;
   let fit: FitStats | undefined;
   if (source.some((p) => isArc(p) && !p.circular)) {
-    const swapped = fitEllipses(source, MAX_FIT_PIECES - fitted);
+    const swapped = fitEllipses(source, MAX_FIT_PIECES - fitted, tolerance);
     if (swapped === null) {
       return 'mixed path';
     }

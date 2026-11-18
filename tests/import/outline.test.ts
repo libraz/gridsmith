@@ -364,6 +364,81 @@ describe('filled outlines', () => {
     ]);
   });
 
+  // A chevron pointing right whose arms cross a bar: the arms' outer edges run from (-6, 4) and
+  // (-6, -4) to the tip (0, 0), and the bar y -1..1 runs from x -4 to 2, so the edges cross the
+  // bar's edges at (-1.5, 1) and (-1.5, -1). Clockwise as drawn.
+  const chevron = [
+    line([-6, 4], [0, 0]),
+    line([0, 0], [-6, -4]),
+    line([-6, -4], [-6, -2]),
+    line([-6, -2], [-4, -2]),
+    line([-4, -2], [-4, -1]),
+    line([-4, -1], [2, -1]),
+    line([2, -1], [2, 1]),
+    line([2, 1], [-4, 1]),
+    line([-4, 1], [-4, 2]),
+    line([-4, 2], [-6, 2]),
+    line([-6, 2], [-6, 4]),
+  ];
+
+  it('cuts a ring whose lines cross into three loops, marked checked', () => {
+    expect('detail' in outlineOf(chevron, 'v')).toBe(true);
+    const result = outlinesOf(chevron, 'v');
+    if (!('shapes' in result)) {
+      throw new Error(`rejected: ${result.detail}`);
+    }
+    expect(result.checked).toBe(true);
+    expect(result.outlines.map((o) => o.id)).toEqual(['v', 'vb', 'vc']);
+    expect(result.outlines.every((o) => o.minus === undefined)).toBe(true);
+    // Upper arm (-6,4) (-1.5,1) (-4,1) (-4,2) (-6,2): 4.75; lower arm the same; the wedge, the
+    // bar from x -1.5 to 2 less the tip triangle (-1.5,1) (0,0) (-1.5,-1): 7 - 1.5 = 5.5.
+    const areas = result.outlines.map((o) => {
+      const own = result.shapes.filter((s) => s.id === o.id || s.id.startsWith(`${o.id}p`));
+      return buildChain(rebuilt(own)).area;
+    });
+    expect(areas.map((a) => Math.round(a * 1e6) / 1e6).sort()).toEqual([4.75, 4.75, 5.5]);
+  });
+
+  it('leaves the crossings alone without untangle', () => {
+    expect(outlinesOf(chevron, 'v', false)).toEqual({ detail: 'self_intersection' });
+  });
+
+  it('still fails when the lines cross within 0.02 of an end', () => {
+    // The edge from (0, 0) to (6, 6) crosses the edge from (6, 0) to (0.01, 0.02) at about
+    // (0.02, 0.02), 0.01 from the latter's end.
+    const ring = [
+      line([0, 0], [6, 6]),
+      line([6, 6], [6, 0]),
+      line([6, 0], [0.01, 0.02]),
+      line([0.01, 0.02], [0, 0]),
+    ];
+    expect(outlinesOf(ring, 'e')).toEqual(outlinesOf(ring, 'e', false));
+    expect('detail' in outlinesOf(ring, 'e')).toBe(true);
+  });
+
+  it('writes a cusp half circle as its chord ring less the circle', () => {
+    // Rect x -6..0, y -1..1 whose right side is carved by the half circle about the origin of
+    // radius 1; the bar edges meet the half circle with reversed tangents.
+    const ring = [
+      line([-6, -1], [0, -1]),
+      arc([0, 0], 1, -Q, -Math.PI, [0, -1], [0, 1]),
+      line([0, 1], [-6, 1]),
+      line([-6, 1], [-6, -1]),
+    ];
+    expect(outlineOf(ring, 'k')).toEqual({ detail: 'direction_mismatch' });
+    const result = outlinesOf(ring, 'k');
+    if (!('shapes' in result)) {
+      throw new Error(`rejected: ${result.detail}`);
+    }
+    expect(result.checked).toBe(true);
+    expect(result.outlines).toHaveLength(1);
+    expect(result.outlines[0]?.minus).toEqual({ id: 'kcap', center: [0, 0], r: 1 });
+    expect(result.shapes.at(-1)).toEqual({ id: 'kcap', type: 'circle', center: [0, 0], r: 1 });
+    const own = result.shapes.filter((s) => s.id === 'k' || s.id.startsWith('kp'));
+    expect(buildChain(rebuilt(own)).area).toBeCloseTo(12, 6);
+    expect(outlinesOf(ring, 'k', false)).toEqual({ detail: 'direction_mismatch' });
+  });
+
   it('tidies near-same arcs and the chord between them into one piece', () => {
     // The base overshoots by 0.01 and turns back; the arc is two quarters joined by a 0.1 chord.
     const e = 0.01;

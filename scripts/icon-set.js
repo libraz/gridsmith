@@ -1,7 +1,8 @@
 /**
  * Batch tools for icon specs, run from `dist/`.
  *
- *   import <segments.json> <outDir>                  segment sets -> snapped specs + report.json
+ *   import <segments.json> <outDir> [--step 0.5|0.25|0.1]
+ *                                                    segment sets -> snapped specs + report.json
  *   check <dir | spec.json ...> [--widths a,b] [--colors #x,#y]
  *                                                    evaluate specs; write segments when all pass
  *   show <spec.json> <outPrefix>                     sheet and pixel-preview PNGs, violations as JSON
@@ -24,7 +25,7 @@ const GAP = 16;
 const MARGIN = 8;
 const USAGE = [
   'usage:',
-  '  icon-set.js import <segments.json> <outDir>',
+  '  icon-set.js import <segments.json> <outDir> [--step 0.5|0.25|0.1]',
   '  icon-set.js check <dir | spec.json ...> [--widths a,b,...] [--colors #rrggbb,...]',
   '  icon-set.js show <spec.json> <outPrefix>',
   '  icon-set.js compare <segments.json> <out.png> <dir | spec.json ...>',
@@ -99,7 +100,7 @@ async function specTargets(command, args) {
   return names.map((name) => ({ name, file: join(args[0], `${name}.json`) }));
 }
 
-async function importCommand(file, outDir) {
+async function importCommand(file, outDir, step) {
   const input = await readJson(file);
   await mkdir(outDir, { recursive: true });
   const report = {
@@ -125,6 +126,7 @@ async function importCommand(file, outDir) {
       evaluated: false,
       diffShare: null,
       diff: null,
+      step: null,
       moved: 0,
       gap: 0,
       kept: [],
@@ -134,7 +136,10 @@ async function importCommand(file, outDir) {
     report.perIcon[name] = entry;
     let result;
     try {
-      result = importIcon(TOOL, input[name], { snap: true });
+      result = importIcon(TOOL, input[name], {
+        snap: true,
+        ...(step === undefined ? {} : { step }),
+      });
     } catch (error) {
       if (error.name === 'ToolFailure') {
         throw error;
@@ -177,6 +182,7 @@ async function importCommand(file, outDir) {
       bump(report.elements, shape.type);
     }
     entry.diffShare = result.faithful;
+    entry.step = result.snap?.step ?? null;
     entry.moved = result.snap?.moved ?? 0;
     entry.gap = result.snap?.gap ?? 0;
     entry.kept = result.snap?.kept ?? [];
@@ -345,6 +351,18 @@ async function compareCommand(file, out, paths) {
   await writeFile(out, encodeRgbPng(width, height, rgb));
 }
 
+// The value of `--step`, one of the grid steps an icon may use; undefined when absent.
+function stepOption(args) {
+  if (args.length === 0) {
+    return undefined;
+  }
+  const value = Number(args[1]);
+  if (args[0] !== '--step' || args.length !== 2 || ![0.5, 0.25, 0.1].includes(value)) {
+    fail(USAGE);
+  }
+  return value;
+}
+
 const [command, ...rest] = process.argv.slice(2);
 const need = (n) => {
   if (rest.length < n) {
@@ -355,7 +373,7 @@ try {
   switch (command) {
     case 'import':
       need(2);
-      await importCommand(rest[0], rest[1]);
+      await importCommand(rest[0], rest[1], stepOption(rest.slice(2)));
       break;
     case 'check':
       need(1);
