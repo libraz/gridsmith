@@ -299,7 +299,8 @@ function travel(piece: ChainPiece, p: Vec): Vec {
   return piece.ccw ? t : scale(t, -1);
 }
 
-function jointsOf(
+/** Joints of consecutive pieces with the given kinds; turns follow from the travel directions. */
+export function jointsOf(
   pieces: readonly ChainPiece[],
   kinds: readonly ChainJoint['kind'][],
 ): ChainJoint[] {
@@ -312,7 +313,7 @@ function jointsOf(
 }
 
 /** Shoelace over the joints plus the signed circular segment of every arc. */
-function areaOf(pieces: readonly ChainPiece[]): number {
+export function areaOf(pieces: readonly ChainPiece[]): number {
   let chords = 0;
   let segments = 0;
   for (const p of pieces) {
