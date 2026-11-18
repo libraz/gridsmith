@@ -1386,11 +1386,11 @@ describe('arc on an oval', () => {
   });
 
   it('counts the last end of an open run toward off_canvas', () => {
-    // 11 by 6 oval, run from 200 to 350 degrees: its end lies about 10.57 right of the centre,
-    // beyond every joint and axis extreme the run passes, so half a width of 3 pushes it past 12.
+    // 11 by 6 oval, run from 200 to 350 degrees: its end lies about 10.47 right of the centre,
+    // beyond every joint and axis extreme the run passes, so half a width of 3.2 pushes it past 12.
     const wide = (width: number) => icon([oval(11, 6), arcOn(200, 350)], strokes(['a'], width));
-    expect(has(wide(3), 'off_canvas', 'a')).toBe(true);
-    expect(has(wide(2.8), 'off_canvas')).toBe(false);
+    expect(has(wide(3.2), 'off_canvas', 'a')).toBe(true);
+    expect(has(wide(3), 'off_canvas')).toBe(false);
   });
 });
 

@@ -1,11 +1,22 @@
-// Closed chains for axis-aligned rectangles (sharp, rounded, pill) and the four-arc oval.
-// Pieces are laid out directly from closed forms rather than found by `buildChain`, so joint
-// points are exact and shared by both pieces they join.
+// Closed chains for axis-aligned rectangles (sharp, rounded, pill) and the oval, a G1 chain of
+// circular arcs that follows a true ellipse. Pieces are laid out directly from closed forms rather
+// than found by `buildChain`, so joint points are exact and shared by both pieces they join.
 
 import type { Chain, ChainJoint, ChainPiece } from './chain.js';
 import { areaOf, jointsOf } from './chain.js';
 import type { Circle, Vec } from './primitives.js';
-import { add, distance, leftNormal, lineThrough, SNAP, scale } from './primitives.js';
+import {
+  add,
+  cross,
+  distance,
+  dot,
+  leftNormal,
+  length,
+  lineThrough,
+  SNAP,
+  scale,
+  sub,
+} from './primitives.js';
 
 const line = (start: Vec, end: Vec): ChainPiece => ({
   kind: 'line',
@@ -126,61 +137,179 @@ export function rectChain(min: Vec, max: Vec, r: number): Chain {
   return chainOf(pieces, 'tangent');
 }
 
-/**
- * Radii of the four-arc oval drawn from the chord between a major and a minor axis end:
- * `end` at the major-axis ends, `side` at the minor-axis ends.
- */
-export function ovalRadii(rx: number, ry: number): { end: number; side: number } {
-  const a = Math.max(rx, ry);
-  const b = Math.min(rx, ry);
-  const d = Math.hypot(a, b);
-  return { end: (d * (d - a + b)) / (2 * a), side: (d * (d + a - b)) / (2 * b) };
+/** Number of biarcs (arc pairs) per quarter of the oval. */
+export const OVAL_BIARCS = 4;
+
+const TWO_PI = 2 * Math.PI;
+
+type OvalArc = { c: Vec; r: number; s: Vec; e: Vec };
+
+/** Counter-clockwise angle in (0, 2 pi) from `s` to `e` around `c`. */
+function ccwSweep(c: Vec, s: Vec, e: Vec): number {
+  const raw = Math.atan2(e.y - c.y, e.x - c.x) - Math.atan2(s.y - c.y, s.x - c.x);
+  return ((raw % TWO_PI) + TWO_PI) % TWO_PI;
 }
 
-/** Oval frame in major/minor coordinates: centre offsets, joint and half-sweep of the end arcs. */
-function ovalFrame(rx: number, ry: number) {
-  const a = Math.max(rx, ry);
-  const b = Math.min(rx, ry);
-  const { end, side } = ovalRadii(rx, ry);
-  const e = a - end;
-  const s = side - b;
-  // The upper-right joint lies on the line from the top arc's centre (0, -s) through (e, 0).
-  const k = side / Math.hypot(e, s);
-  return { a, b, end, side, e, s, joint: { x: e * k, y: s * (k - 1) }, alpha: Math.atan2(s, e) };
+/** Ellipse parameters 0 = t_0 < ... < t_K = pi / 2 that split the integral of |kappa'|^(1/3) ds evenly. */
+function ovalSplits(a: number, b: number): number[] {
+  const steps = 2000;
+  const weight = (t: number): number =>
+    Math.abs(Math.sin(2 * t)) ** (1 / 3) / Math.hypot(a * Math.sin(t), b * Math.cos(t));
+  const ts: number[] = [];
+  const cum: number[] = [0];
+  for (let i = 0; i <= steps; i++) {
+    ts.push((i * Math.PI) / 2 / steps);
+  }
+  for (let i = 1; i <= steps; i++) {
+    const h = (ts[i] as number) - (ts[i - 1] as number);
+    const mean = (weight(ts[i - 1] as number) + weight(ts[i] as number)) / 2;
+    cum.push((cum[i - 1] as number) + mean * h);
+  }
+  const total = cum[steps] as number;
+  const out = [0];
+  let i = 1;
+  for (let k = 1; k < OVAL_BIARCS; k++) {
+    const target = (k * total) / OVAL_BIARCS;
+    while ((cum[i] as number) < target) {
+      i++;
+    }
+    const f = (target - (cum[i - 1] as number)) / ((cum[i] as number) - (cum[i - 1] as number));
+    out.push((ts[i - 1] as number) + f * ((ts[i] as number) - (ts[i - 1] as number)));
+  }
+  out.push(Math.PI / 2);
+  return out;
+}
+
+/** Two arcs from `p0` (unit tangent `t0`) to `p1` (unit tangent `t1`) meeting with a common tangent. */
+function ovalBiarc(p0: Vec, t0: Vec, p1: Vec, t1: Vec): [OvalArc, OvalArc] {
+  const w = sub(p1, p0);
+  const c = 1 - dot(t0, t1);
+  const d2Of = (d1: number): number =>
+    (dot(w, w) - 2 * d1 * dot(w, t0)) / (2 * dot(w, t1) + 2 * d1 * c);
+  // Zero when the tangent at the joint is parallel to the chord.
+  const skew = (d1: number): number => cross(w, sub(sub(w, scale(t0, d1)), scale(t1, d2Of(d1))));
+  const reach = 2 * length(w);
+  let lo = 0;
+  let hi = 0;
+  let found = false;
+  let prev: { d1: number; v: number } | null = null;
+  for (let i = 1; i <= 64 && !found; i++) {
+    const d1 = (i * reach) / 64;
+    const v = d2Of(d1) > 0 ? skew(d1) : null;
+    if (prev !== null && v !== null && Math.sign(prev.v) !== Math.sign(v)) {
+      lo = prev.d1;
+      hi = d1;
+      found = true;
+    }
+    prev = v === null ? null : { d1, v };
+  }
+  if (!found) {
+    throw new Error('ovalChain: no biarc joint found; semi-axes must differ');
+  }
+  let flo = skew(lo);
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    const fm = skew(mid);
+    if (Math.sign(fm) === Math.sign(flo)) {
+      lo = mid;
+      flo = fm;
+    } else {
+      hi = mid;
+    }
+  }
+  const d1 = (lo + hi) / 2;
+  const d2 = d2Of(d1);
+  const q0 = add(p0, scale(t0, d1));
+  const q1 = sub(p1, scale(t1, d2));
+  const joint = scale(add(scale(q0, d2), scale(q1, d1)), 1 / (d1 + d2));
+  const circleAt = (p: Vec, t: Vec): { c: Vec; r: number } => {
+    const n = leftNormal(t);
+    const d = sub(joint, p);
+    const s = dot(d, d) / (2 * dot(d, n));
+    return { c: add(p, scale(n, s)), r: Math.abs(s) };
+  };
+  const first = circleAt(p0, t0);
+  const second = circleAt(p1, scale(t1, -1));
+  // Rebuild the joint from the centres so the two circles touch within the kernel's tolerance.
+  const gap = sub(second.c, first.c);
+  const j = sub(first.c, scale(gap, first.r / length(gap)));
+  return [
+    { c: first.c, r: first.r, s: p0, e: j },
+    { c: second.c, r: second.r, s: j, e: p1 },
+  ];
+}
+
+/** The eight arcs of the first quarter, from the major-axis end (a, 0) to the minor-axis end (0, b). */
+function ovalQuarter(a: number, b: number): OvalArc[] {
+  const ts = ovalSplits(a, b);
+  const frame = (k: number): { p: Vec; t: Vec } => {
+    if (k === OVAL_BIARCS) {
+      return { p: { x: 0, y: b }, t: { x: -1, y: 0 } };
+    }
+    const t = ts[k] as number;
+    const tangent = { x: -a * Math.sin(t), y: b * Math.cos(t) };
+    return {
+      p: { x: a * Math.cos(t), y: b * Math.sin(t) },
+      t: scale(tangent, 1 / length(tangent)),
+    };
+  };
+  const out: OvalArc[] = [];
+  for (let k = 0; k < OVAL_BIARCS; k++) {
+    const from = frame(k);
+    const to = frame(k + 1);
+    out.push(...ovalBiarc(from.p, from.t, to.p, to.t));
+  }
+  return out;
 }
 
 /**
- * Four-arc oval with semi-axes `rx`, `ry`, turned counter-clockwise by `rotate` radians.
+ * Oval with semi-axes `rx`, `ry`, turned counter-clockwise by `rotate` radians: 28 circular arcs
+ * (`OVAL_BIARCS` biarcs per quarter, the two arcs on each axis end merged) that stay within
+ * 0.06% of the longer semi-axis of the true ellipse and join tangentially.
  * Starts at the lower joint of the arc on the positive major-axis end.
+ * Requires `|rx - ry|` of at least 0.05; equal semi-axes throw.
  */
 export function ovalChain(center: Vec, rx: number, ry: number, rotate: number): Chain {
-  const { end, side, e, s, joint, alpha } = ovalFrame(rx, ry);
+  if (rx === ry) {
+    throw new Error('ovalChain: rx and ry are equal');
+  }
+  const a = Math.max(rx, ry);
+  const b = Math.min(rx, ry);
+  const q1 = ovalQuarter(a, b);
+  const last = q1.length - 1;
+  const acrossY = (p: Vec): Vec => ({ x: -p.x, y: p.y });
+  const acrossX = (p: Vec): Vec => ({ x: p.x, y: -p.y });
+  const through = (p: Vec): Vec => ({ x: -p.x, y: -p.y });
+  // A mirror reverses travel, so the mirrored arc runs from the image of its end to that of its start.
+  const mirrored = (m: (p: Vec) => Vec): OvalArc[] =>
+    [...q1].reverse().map((x) => ({ c: m(x.c), r: x.r, s: m(x.e), e: m(x.s) }));
+  const q2 = mirrored(acrossY);
+  const q3 = q1.map((x) => ({ c: through(x.c), r: x.r, s: through(x.s), e: through(x.e) }));
+  const q4 = mirrored(acrossX);
+  // The two arcs meeting on an axis lie on one circle; join them with its centre placed on the axis.
+  const merge = (x: OvalArc, y: OvalArc, c: Vec): OvalArc => ({ c, r: x.r, s: x.s, e: y.e });
+  const end = (q1[0] as OvalArc).r;
+  const side = (q1[last] as OvalArc).r;
+  const arcs = [
+    merge(q4[last] as OvalArc, q1[0] as OvalArc, { x: a - end, y: 0 }),
+    ...q1.slice(1, last),
+    merge(q1[last] as OvalArc, q2[0] as OvalArc, { x: 0, y: b - side }),
+    ...q2.slice(1, last),
+    merge(q2[last] as OvalArc, q3[0] as OvalArc, { x: end - a, y: 0 }),
+    ...q3.slice(1, last),
+    merge(q3[last] as OvalArc, q4[0] as OvalArc, { x: 0, y: side - b }),
+    ...q4.slice(1, last),
+  ];
   const turn = rx >= ry ? rotate : rotate + Math.PI / 2;
   const m = { x: Math.cos(turn), y: Math.sin(turn) };
   const n = leftNormal(m);
-  const to = (u: number, v: number): Vec => add(center, add(scale(m, u), scale(n, v)));
-  const circle = (u: number, v: number, r: number): Circle => {
-    const c = to(u, v);
-    return { cx: c.x, cy: c.y, r };
-  };
-  const j0 = to(joint.x, -joint.y);
-  const j1 = to(joint.x, joint.y);
-  const j2 = to(-joint.x, joint.y);
-  const j3 = to(-joint.x, -joint.y);
-  const endSweep = 2 * alpha;
-  const sideSweep = Math.PI - 2 * alpha;
-  return chainOf(
-    [
-      arc(circle(e, 0, end), j0, j1, endSweep),
-      arc(circle(0, -s, side), j1, j2, sideSweep),
-      arc(circle(-e, 0, end), j2, j3, endSweep),
-      arc(circle(0, s, side), j3, j0, sideSweep),
-    ],
-    'tangent',
-  );
+  const to = (p: Vec): Vec => add(center, add(scale(m, p.x), scale(n, p.y)));
+  const pieces = arcs.map((x) => {
+    const c = to(x.c);
+    return arc({ cx: c.x, cy: c.y, r: x.r }, to(x.s), to(x.e), ccwSweep(x.c, x.s, x.e));
+  });
+  return chainOf(pieces, 'tangent');
 }
-
-const TWO_PI = 2 * Math.PI;
 
 type OvalHit = { index: number; point: Vec; offset: number };
 
@@ -216,7 +345,7 @@ function ovalHits(pieces: readonly ChainPiece[], center: Vec, angle: number): Ov
 }
 
 /**
- * Pieces of the four-arc oval (see `ovalChain`) from the point seen from the centre at angle
+ * Pieces of the oval (see `ovalChain`) from the point seen from the centre at angle
  * `from` to the point seen at angle `to`, counter-clockwise; angles in radians from +x.
  * A direction through a joint starts on the next piece and ends on the previous one; pieces no
  * longer than `SNAP` are dropped. `from` and `to` must not differ by a multiple of a full turn.
@@ -255,39 +384,35 @@ export function ovalArc(
     return out;
   }
   part(a.index, a.point, (base[a.index] as ChainPiece).end, sweepOf(a.index) - a.offset);
-  for (let k = (a.index + 1) % 4; k !== b.index; k = (k + 1) % 4) {
+  for (let k = (a.index + 1) % base.length; k !== b.index; k = (k + 1) % base.length) {
     out.push(base[k] as ChainPiece);
   }
   part(b.index, (base[b.index] as ChainPiece).start, b.point, b.offset);
   return out;
 }
 
-/** Distance from a point to the arc of `circle` between polar angles `lo` and `hi`. */
-function arcDistance(p: Vec, c: Vec, r: number, lo: number, hi: number): number {
-  const t = Math.atan2(p.y - c.y, p.x - c.x);
-  if (t >= lo && t <= hi) {
-    return Math.abs(distance(p, c) - r);
+/** Distance from a point to an arc of the oval construction. */
+function arcDistance(p: Vec, x: OvalArc): number {
+  if (ccwSweep(x.c, x.s, p) <= ccwSweep(x.c, x.s, x.e)) {
+    return Math.abs(distance(p, x.c) - x.r);
   }
-  const ends = [lo, hi].map((u) => ({ x: c.x + r * Math.cos(u), y: c.y + r * Math.sin(u) }));
-  return Math.min(...ends.map((q) => distance(p, q)));
+  return Math.min(distance(p, x.s), distance(p, x.e));
 }
 
 /**
- * Largest distance from the true ellipse to the four-arc oval, over 720 points of the first
- * quadrant at equal steps of the parametric angle.
+ * Largest distance from the true ellipse to the oval, over 720 points of the first quadrant at
+ * equal steps of the parametric angle.
  */
 export function ovalDeviation(rx: number, ry: number): number {
-  const { a, b, end, side, e, s, alpha } = ovalFrame(rx, ry);
+  const a = Math.max(rx, ry);
+  const b = Math.min(rx, ry);
+  const arcs = ovalQuarter(a, b);
   const count = 720;
   let worst = 0;
   for (let i = 0; i < count; i++) {
     const t = (i * Math.PI) / 2 / (count - 1);
     const p = { x: a * Math.cos(t), y: b * Math.sin(t) };
-    const d = Math.min(
-      arcDistance(p, { x: e, y: 0 }, end, 0, alpha),
-      arcDistance(p, { x: 0, y: -s }, side, alpha, Math.PI / 2),
-    );
-    worst = Math.max(worst, d);
+    worst = Math.max(worst, Math.min(...arcs.map((x) => arcDistance(p, x))));
   }
   return worst;
 }

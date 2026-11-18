@@ -1052,10 +1052,9 @@ describe('icon mode through the tools', () => {
       'rx',
       'ry',
       'rotate',
-      'end',
-      'side',
       'area',
     ]);
+    expect(Math.abs((byId('egg')?.area as number) / (Math.PI * 3 * 2) - 1)).toBeLessThan(0.001);
     expect(report.stats.map((s) => s.paint)).toEqual([0, 1, 2, 3, 4]);
     expect(report.stats[0]).toHaveProperty('loops', 1);
     expect(report.stats[1]).toEqual({ paint: 1, strokes: 1 });
@@ -1194,8 +1193,41 @@ describe('arc on an oval', () => {
       y1: 0,
       x2: 0,
       y2: 2,
-      pieces: 2,
+      pieces: 8,
     });
+  });
+
+  it('reports 15 pieces for the upper half and ends on the ellipse in the stated direction', async () => {
+    const half = {
+      ...spec,
+      shapes: [spec.shapes[0], { id: 'a', type: 'arc', on: 'o', from: 0, to: 180 }],
+    };
+    const whole = jsonOf(await call('gridsmith_render', { spec: half, views: ['svg'] })) as {
+      geometry: Record<string, unknown>[];
+    };
+    const arc = whole.geometry.find((g) => g.id === 'a');
+    expect(arc?.pieces).toBe(15);
+    expect(arc).toMatchObject({ x1: 3, y1: 0, x2: -3, y2: 0 });
+
+    const slanted = {
+      ...spec,
+      shapes: [spec.shapes[0], { id: 'a', type: 'arc', on: 'o', from: 20, to: 70 }],
+    };
+    const part = jsonOf(await call('gridsmith_render', { spec: slanted, views: ['svg'] })) as {
+      geometry: Record<string, unknown>[];
+    };
+    const a = part.geometry.find((g) => g.id === 'a') as Record<string, number>;
+    const tol = 0.0006 * 3;
+    for (const [x, y, deg] of [
+      [a.x1 as number, a.y1 as number, 20],
+      [a.x2 as number, a.y2 as number, 70],
+    ] as const) {
+      // Distance to the ellipse is at least 2 * |f - 1| (f = hypot(x / rx, y / ry)); coordinates are rounded to 4 places.
+      expect(Math.abs(Math.hypot(x / 3, y / 2) - 1) * 2).toBeLessThanOrEqual(tol + 2e-4);
+      const dir = (deg * Math.PI) / 180;
+      expect(Math.abs(x * Math.sin(dir) - y * Math.cos(dir))).toBeLessThan(1e-3);
+      expect(x * Math.cos(dir) + y * Math.sin(dir)).toBeGreaterThan(0);
+    }
   });
 
   it('exports the open path without a closing Z', async () => {

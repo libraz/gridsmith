@@ -70,7 +70,7 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 | `outline` | One closed edge cut from circles and lines declared earlier, joined by tangency or at chosen corners; see below |
 | `polyline` | Open polyline through 3 to 32 points; stroke layers only |
 | `rect` | Axis-parallel rectangle between two opposite `corners`; `r` rounds all four corners |
-| `oval` | Oval of semi-axes `rx` and `ry` made of four circular arcs, turned by `rotate` degrees; the ratio is at most 4 |
+| `oval` | Oval of semi-axes `rx` and `ry` whose outline follows the true ellipse as 28 circular arcs, within 0.06% of the longer semi-axis, turned by `rotate` degrees; the ratio is at most 4 |
 | `repeat` | `n` rotated copies of `of` about `center`; `mirror` adds the reflection across the line at angle `axis` |
 
 **Length.** A number from 0.05 to 64 modules, or an expression: `R` or `<circle id>.r`, followed by `*` or `/` with 2 to 16, `sqrt2`, `sqrt3`, `phi` or `phi2`. For example `"R/2"` or `"outer.r*sqrt3/2"`. No spaces, parentheses, `+` or `-`.

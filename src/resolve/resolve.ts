@@ -26,7 +26,7 @@ import {
   sub,
 } from '../geom/primitives.js';
 import type { RegionNode } from '../geom/region.js';
-import { ovalArc, ovalChain, ovalRadii, rectChain } from '../geom/shapes.js';
+import { ovalArc, ovalChain, rectChain } from '../geom/shapes.js';
 import type { TangentCandidate, TangentTarget } from '../geom/tangent.js';
 import { tangentCandidates } from '../geom/tangent.js';
 import { evaluateLengthExpression, parseLengthExpression } from '../spec/length.js';
@@ -110,7 +110,7 @@ export type ResolvedRect = {
   area: number;
 };
 
-/** Four-arc oval; `rotate` is degrees, `end` and `side` the radii at the major and minor axis ends. */
+/** Oval following the true ellipse with circular arcs; `rotate` is degrees. */
 export type ResolvedOval = {
   type: 'oval';
   id: string;
@@ -118,8 +118,6 @@ export type ResolvedOval = {
   rx: number;
   ry: number;
   rotate: number;
-  end: number;
-  side: number;
   pieces: ChainPiece[];
   joints: ChainJoint[];
   area: number;
@@ -897,7 +895,6 @@ export function resolveSpec(spec: Spec): ResolveResult {
         `oval is too elongated (received: rx ${fmt(rx)}, ry ${fmt(ry)}, ratio ${fmt(a / b)}; allowed: a ratio up to ${OVAL_RATIO_MAX}). Bring rx and ry closer.`,
       );
     }
-    const { end, side } = ovalRadii(rx, ry);
     const chain = ovalChain(center, rx, ry, (shape.rotate * Math.PI) / 180);
     return {
       type: 'oval',
@@ -906,8 +903,6 @@ export function resolveSpec(spec: Spec): ResolveResult {
       rx,
       ry,
       rotate: shape.rotate,
-      end,
-      side,
       ...chain,
     };
   };

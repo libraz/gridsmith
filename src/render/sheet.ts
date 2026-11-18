@@ -145,7 +145,7 @@ function legendRow(el: ResolvedElement): string {
       return `${el.id}  rect  ${w} × ${h}${el.r > 0 ? `, r = ${tidy(el.r)}` : ''}`;
     }
     case 'oval':
-      return `${el.id}  oval  rx = ${tidy(el.rx)}, ry = ${tidy(el.ry)}, end ${tidy(el.end)}, side ${tidy(el.side)}`;
+      return `${el.id}  oval  rx = ${tidy(el.rx)}, ry = ${tidy(el.ry)}${el.rotate === 0 ? '' : `, rotate ${tidy(el.rotate)}`}`;
     case 'oval_arc':
       return `${el.id}  arc  on ${el.on}, ${tidy(el.from)} to ${tidy(el.to)}`;
     case 'polyline': {
@@ -371,22 +371,24 @@ function helperMarkup(
       }
       return out;
     }
-    case 'oval':
-      return el.pieces.flatMap((piece) =>
-        piece.kind === 'arc'
-          ? [
-              `<circle cx="${num(sx(f, piece.circle.cx))}" cy="${num(sy(f, piece.circle.cy))}" r="${num(piece.circle.r * f.scale)}" ${stroke}/>`,
-            ]
-          : [],
-      );
+    case 'oval': {
+      const d = chainPathData(el.pieces, (p) => ({ x: sx(f, p.x), y: sy(f, p.y) }), f.scale);
+      const angle = (el.rotate * Math.PI) / 180;
+      const ux = Math.cos(angle);
+      const uy = Math.sin(angle);
+      const axis = (r: number, dx: number, dy: number): string =>
+        `<line x1="${num(sx(f, el.center.x - r * dx))}" y1="${num(sy(f, el.center.y - r * dy))}" x2="${num(sx(f, el.center.x + r * dx))}" y2="${num(sy(f, el.center.y + r * dy))}" ${stroke}/>`;
+      return [
+        `<path d="${d}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * OUTLINE_WIDTH_FACTOR)}"${extra}/>`,
+        axis(el.rx, ux, uy),
+        axis(el.ry, -uy, ux),
+      ];
+    }
   }
 }
 
 /** One marker per joint: a small circle where the outline is smooth, a small square at a corner. */
-function jointMarkup(
-  el: Extract<ResolvedElement, { type: 'outline' | 'oval' }>,
-  f: Frame,
-): string[] {
+function jointMarkup(el: Extract<ResolvedElement, { type: 'outline' }>, f: Frame): string[] {
   return el.joints.map((j) => {
     const x = sx(f, j.at.x);
     const y = sy(f, j.at.y);
@@ -487,7 +489,7 @@ function constructionMarkup(model: ResolvedModel, f: Frame): { helpers: string[]
       helpers.push(`<g data-id="${id}" data-kind="repeat">${inner.join('')}</g>`);
     } else {
       inner.push(...helperMarkup(el, f, true, ''));
-      if (el.type === 'outline' || el.type === 'oval') {
+      if (el.type === 'outline') {
         inner.push(...jointMarkup(el, f));
       }
       helpers.push(`<g data-id="${id}">${inner.join('')}</g>`);

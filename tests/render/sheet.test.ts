@@ -636,10 +636,12 @@ describe('icon sheet', () => {
     expect(count(g, /<circle /g)).toBe(4);
   });
 
-  it('draws the four construction circles and four joints of an oval', () => {
+  it('draws an oval as its outline path and two axis lines, with no support circles or joint marks', () => {
     const g = group(sheet.svg, 'egg');
-    expect(count(g, /<circle [^>]*fill="none"/g)).toBe(4);
-    expect(count(g, /<circle [^>]*fill="#2a6fb0"\/>/g)).toBe(4);
+    expect(count(g, /<path /g)).toBe(1);
+    expect(count(g, /<circle /g)).toBe(0);
+    expect(count(g, /<rect /g)).toBe(0);
+    expect(count(g, /<line /g)).toBe(2);
   });
 
   it('marks every vertex of a polyline', () => {
@@ -651,11 +653,7 @@ describe('icon sheet', () => {
   it('lists legend rows for the new elements', () => {
     const lines = panelLines(sheet.svg);
     expect(lines).toContain('plate  rect  20 × 14, r = 2');
-    expect(
-      lines.some((l) =>
-        /^egg {2}oval {2}rx = 6, ry = 4, end \d+(\.\d+)?, side \d+(\.\d+)?$/.test(l),
-      ),
-    ).toBe(true);
+    expect(lines).toContain('egg  oval  rx = 6, ry = 4');
     expect(lines).toContain('trend  polyline  5 points');
   });
 

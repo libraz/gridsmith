@@ -1597,7 +1597,7 @@ describe('icon mode', () => {
     expectRejectedAt(iconSpec({ paint: layers(17) }), 'paint');
   });
 
-  it('counts rect as 8, oval as 4 and polyline as its segments toward 256 support curves', () => {
+  it('counts rect as 8, oval as 28 and polyline as its segments toward 256 support curves', () => {
     const rects = (n: number) =>
       Array.from({ length: n }, (_, i) => ({
         id: `q${i}`,
@@ -1620,7 +1620,11 @@ describe('icon mode', () => {
         rx: 3,
         ry: 2,
       }));
-    expect(accepted(iconSpec({ shapes: ovals(64), paint: [{ fill: 'o0' }] }))).toBe(true);
+    // 9 ovals = 252 curves, 10 = 280
+    expect(accepted(iconSpec({ shapes: ovals(9), paint: [{ fill: 'o0' }] }))).toBe(true);
+    expect(messages(iconSpec({ shapes: ovals(10), paint: [{ fill: 'o0' }] }))).toEqual([
+      'too many support curves after repeat expansion (received: at least 280; allowed: at most 256)',
+    ]);
     const lines = (n: number) =>
       Array.from({ length: n }, (_, i) => ({
         id: `p${i}`,

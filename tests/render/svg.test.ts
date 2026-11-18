@@ -882,13 +882,6 @@ describe('icon drawing', () => {
 });
 
 describe('arc on an oval', () => {
-  // rx 3, ry 2: chord length d = sqrt(13); end radius d (d - 1) / 6, side radius d (d + 1) / 4.
-  const d = Math.sqrt(13);
-  const endR = (d * (d - 1)) / 6;
-  const sideR = (d * (d + 1)) / 4;
-  const jx = (d + 1) / 2;
-  const jy = (d - 1) / 2;
-  const n = (x: number): string => String(Number(x.toFixed(6)));
   const input = {
     version: 1,
     mode: 'icon',
@@ -905,6 +898,7 @@ describe('arc on an oval', () => {
     const paths = svg.match(/<path [^>]*>/g) ?? [];
     expect(paths).toHaveLength(1);
     expect(paths[0]).toMatch(/ d="M15 12A[^"]*9 12"\/>$/);
+    expect(paths[0]?.match(/A/g)).toHaveLength(15);
     expect(paths[0]).not.toContain('Z');
   });
 
@@ -914,8 +908,12 @@ describe('arc on an oval', () => {
     if (run?.type !== 'oval_arc') {
       throw new Error('expected an oval_arc');
     }
-    const radii = `A ${n(endR)} ${n(endR)} 0 0 0 ${n(jx)} ${n(-jy)} A ${n(sideR)} ${n(sideR)} 0 0 0 ${n(-jx)} ${n(-jy)} A ${n(endR)} ${n(endR)} 0 0 0 -3 0`;
-    expect(chainPathData(run.pieces, undefined, 1, false)).toBe(`M 3 0 ${radii}`);
-    expect(chainPathData(run.pieces)).toBe(`M 3 0 ${radii} Z`);
+    const open = chainPathData(run.pieces, undefined, 1, false);
+    const closed = chainPathData(run.pieces);
+    expect(open.startsWith('M 3 0 A ')).toBe(true);
+    expect(open.endsWith(' -3 0')).toBe(true);
+    expect(open.match(/A/g)).toHaveLength(15);
+    expect(open).not.toContain('Z');
+    expect(closed).toBe(`${open} Z`);
   });
 });

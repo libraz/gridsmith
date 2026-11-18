@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
 import type { Chain, ChainPiece } from '../../src/geom/chain.js';
-import { intersectCircleLine } from '../../src/geom/intersect.js';
-import type { Vec } from '../../src/geom/primitives.js';
-import { centerOf, distance } from '../../src/geom/primitives.js';
+import { intersectCircleCircle, intersectCircleLine } from '../../src/geom/intersect.js';
+import type { Circle, Vec } from '../../src/geom/primitives.js';
+import { add, centerOf, distance } from '../../src/geom/primitives.js';
 import type { RegionNode } from '../../src/geom/region.js';
-import { ovalArc, ovalChain, ovalDeviation, ovalRadii, rectChain } from '../../src/geom/shapes.js';
+import { ovalArc, ovalChain, ovalDeviation, rectChain } from '../../src/geom/shapes.js';
+import { OVAL_CURVES } from '../../src/spec/schema.js';
 
 const v = (x: number, y: number): Vec => ({ x, y });
 const source = { id: 's', copy: 0 };
@@ -20,19 +21,6 @@ const expectRelative = (actual: number, expected: number, rel: number): void => 
 /** w * h less the four corner remainders of radius r. */
 const rectArea = (w: number, h: number, r: number): number => w * h - (4 - Math.PI) * r * r;
 
-/**
- * Four sectors (two of radius `end` over 2 alpha, two of radius `side` over pi - 2 alpha) less
- * the rhombus of the four centres, counted twice by the side sectors:
- * 2 end^2 alpha + side^2 (pi - 2 alpha) - 2 (a - end)(side - b), alpha = atan((side - b) / (a - end)).
- */
-const ovalArea = (rx: number, ry: number): number => {
-  const a = Math.max(rx, ry);
-  const b = Math.min(rx, ry);
-  const { end, side } = ovalRadii(rx, ry);
-  const alpha = Math.atan((side - b) / (a - end));
-  return 2 * end * end * alpha + side * side * (Math.PI - 2 * alpha) - 2 * (a - end) * (side - b);
-};
-
 const expectClosedCcw = (chain: Chain): void => {
   const n = chain.pieces.length;
   chain.pieces.forEach((p, k) => {
@@ -42,6 +30,19 @@ const expectClosedCcw = (chain: Chain): void => {
     expect(chain.joints[k]?.at).toBe(p.end);
   });
   expect(chain.area).toBeGreaterThan(0);
+};
+
+const near = (p: Vec, q: Vec, tol = 1e-9): void => {
+  expect(distance(p, q)).toBeLessThanOrEqual(tol);
+};
+
+/** Point halfway along an arc piece. */
+const arcMidpoint = (p: ChainPiece): Vec => {
+  if (p.kind !== 'arc') {
+    throw new Error('expected an arc');
+  }
+  const t = p.from + p.sweep / 2;
+  return v(p.circle.cx + p.circle.r * Math.cos(t), p.circle.cy + p.circle.r * Math.sin(t));
 };
 
 const kinds = (chain: Chain): string[] => chain.pieces.map((p) => p.kind);
@@ -130,23 +131,47 @@ describe('rectChain', () => {
   }
 });
 
+const sameCircle = (p: Circle, q: Circle): boolean => p.cx === q.cx && p.cy === q.cy && p.r === q.r;
+
+const circleOf = (p: ChainPiece | undefined): Circle => {
+  if (p?.kind !== 'arc') {
+    throw new Error('expected an arc');
+  }
+  return p.circle;
+};
+
 describe('ovalChain', () => {
   const ovals = [
     { rx: 6, ry: 4, rotate: 0 },
     { rx: 3, ry: 7.5, rotate: 0 },
     { rx: 8, ry: 2.7, rotate: 0.4 },
     { rx: 2.5, ry: 5, rotate: -2.2 },
+    { rx: 11.5, ry: 11, rotate: 0 },
+    { rx: 1, ry: 0.95, rotate: 1 },
   ];
+  const origin = v(0.5, -1);
 
-  it('the radii follow the closed form of the chord construction', () => {
-    const { end, side } = ovalRadii(4, 2);
-    const d = Math.sqrt(20);
-    expect(end).toBeCloseTo((d * (d - 2)) / 8, 14);
-    expect(side).toBeCloseTo((d * (d + 2)) / 4, 14);
-    expect(ovalRadii(2, 4)).toEqual(ovalRadii(4, 2));
+  /** Maps a point to (along the major axis, along the minor axis) from the oval's centre. */
+  const frameOf = (rx: number, ry: number, rotate: number) => {
+    const turn = rx >= ry ? rotate : rotate + Math.PI / 2;
+    const major = v(Math.cos(turn), Math.sin(turn));
+    const minor = v(-major.y, major.x);
+    const local = (p: Vec): Vec => {
+      const d = v(p.x - origin.x, p.y - origin.y);
+      return v(d.x * major.x + d.y * major.y, d.x * minor.x + d.y * minor.y);
+    };
+    return { local };
+  };
+
+  it('has as many pieces as the schema counts for an oval', () => {
+    expect(ovalChain(origin, 6, 4, 0).pieces).toHaveLength(OVAL_CURVES);
   });
 
-  it('starts at the lower joint of the arc on the positive major-axis end', () => {
+  it('equal semi-axes have no biarc joint and throw', () => {
+    expect(() => ovalChain(origin, 3, 3, 0)).toThrow();
+  });
+
+  it('starts at the lower end of the arc on the positive major-axis end', () => {
     const wide = ovalChain(v(1, 2), 6, 4, 0);
     const first = wide.pieces[0];
     expect(first?.kind).toBe('arc');
@@ -155,6 +180,7 @@ describe('ovalChain', () => {
       expect(first.circle.cy).toBeCloseTo(2, 14);
       expect(first.start.y).toBeLessThan(2);
       expect(first.end.y).toBeGreaterThan(2);
+      near(arcMidpoint(first), v(7, 2), 1e-9);
     }
     const tall = ovalChain(v(0, 0), 3, 7.5, 0);
     const top = tall.pieces[0];
@@ -162,75 +188,127 @@ describe('ovalChain', () => {
       expect(top.circle.cy).toBeGreaterThan(0);
       expect(top.start.x).toBeGreaterThan(0);
       expect(top.end.x).toBeLessThan(0);
+      near(arcMidpoint(top), v(0, 7.5), 1e-9);
     }
   });
 
   for (const o of ovals) {
     const label = `rx ${o.rx}, ry ${o.ry}, rotate ${o.rotate}`;
+    const a = Math.max(o.rx, o.ry);
+    const b = Math.min(o.rx, o.ry);
 
-    it(`${label}: four counter-clockwise arcs, tangent-continuous at every joint`, () => {
-      const chain = ovalChain(v(0.5, -1), o.rx, o.ry, o.rotate);
+    it(`${label}: counter-clockwise arcs, closed, tangent at every joint`, () => {
+      const chain = ovalChain(origin, o.rx, o.ry, o.rotate);
       expectClosedCcw(chain);
-      expect(kinds(chain)).toEqual(['arc', 'arc', 'arc', 'arc']);
+      expect(kinds(chain).every((k) => k === 'arc')).toBe(true);
       chain.pieces.forEach((p, k) => {
-        const next = chain.pieces[(k + 1) % 4];
-        if (p.kind !== 'arc' || next?.kind !== 'arc') {
-          throw new Error('expected arcs');
-        }
-        expect(p.ccw).toBe(true);
+        const next = chain.pieces[(k + 1) % chain.pieces.length];
+        expect(p.kind === 'arc' && p.ccw).toBe(true);
+        expect(p.kind === 'arc' && p.sweep > 0 && p.sweep < Math.PI).toBe(true);
         expect(chain.joints[k]?.kind).toBe('tangent');
-        const n0 = { x: p.end.x - p.circle.cx, y: p.end.y - p.circle.cy };
-        const n1 = { x: p.end.x - next.circle.cx, y: p.end.y - next.circle.cy };
-        const angle = Math.atan2(Math.abs(n0.x * n1.y - n0.y * n1.x), n0.x * n1.x + n0.y * n1.y);
-        expect(angle).toBeLessThanOrEqual(1e-9);
+        expect(intersectCircleCircle(circleOf(p), circleOf(next)).kind).toBe('tangent');
       });
     });
 
-    it(`${label}: area matches the sector closed form, alone and through arrange`, () => {
-      const chain = ovalChain(v(0.5, -1), o.rx, o.ry, o.rotate);
-      const expected = ovalArea(o.rx, o.ry);
-      expectRelative(chain.area, expected, 1e-9);
-      expectRelative(arrange(leaf(chain)).area, expected, 1e-9);
-      const holed = arrange({ kind: 'subtract', children: [disc, leaf(chain)] });
-      expectRelative(holed.area, Math.PI * DISC_R * DISC_R - expected, 1e-9);
+    it(`${label}: each axis end lies at its semi-axis and is the midpoint of one arc`, () => {
+      const chain = ovalChain(origin, o.rx, o.ry, o.rotate);
+      const ends = [
+        add(origin, v(o.rx * Math.cos(o.rotate), o.rx * Math.sin(o.rotate))),
+        add(origin, v(-o.rx * Math.cos(o.rotate), -o.rx * Math.sin(o.rotate))),
+        add(origin, v(-o.ry * Math.sin(o.rotate), o.ry * Math.cos(o.rotate))),
+        add(origin, v(o.ry * Math.sin(o.rotate), -o.ry * Math.cos(o.rotate))),
+      ];
+      for (const end of ends) {
+        const owners = chain.pieces.filter(
+          (p) => p.kind === 'arc' && distance(arcMidpoint(p), end) < 1e-9,
+        );
+        expect(owners).toHaveLength(1);
+      }
+    });
+
+    it(`${label}: symmetric about both axes`, () => {
+      const chain = ovalChain(origin, o.rx, o.ry, o.rotate);
+      const { local } = frameOf(o.rx, o.ry, o.rotate);
+      const circles = chain.pieces.map((p) => {
+        const c = circleOf(p);
+        return { at: local(v(c.cx, c.cy)), r: c.r };
+      });
+      for (const flip of [(p: Vec) => v(-p.x, p.y), (p: Vec) => v(p.x, -p.y)]) {
+        for (const c of circles) {
+          const image = flip(c.at);
+          const match = circles.some(
+            (d) => distance(d.at, image) < 1e-9 && Math.abs(d.r - c.r) < 1e-9,
+          );
+          expect(match).toBe(true);
+        }
+      }
+    });
+
+    it(`${label}: radii grow from the major-axis end to the minor-axis end`, () => {
+      const pieces = ovalChain(origin, o.rx, o.ry, o.rotate).pieces;
+      const radii = pieces.slice(0, 8).map((p) => circleOf(p).r);
+      for (let k = 1; k < radii.length; k++) {
+        expect(radii[k]).toBeGreaterThan(radii[k - 1] as number);
+      }
+      expect(radii[0]).toBeLessThan(b);
+      expect(radii[7]).toBeGreaterThan(a);
+    });
+
+    it(`${label}: every piece stays on the true ellipse, and the area is pi rx ry within 0.1%`, () => {
+      const chain = ovalChain(origin, o.rx, o.ry, o.rotate);
+      const { local } = frameOf(o.rx, o.ry, o.rotate);
+      for (const p of chain.pieces) {
+        if (p.kind !== 'arc') {
+          continue;
+        }
+        for (let s = 0; s <= 8; s++) {
+          const t = p.from + (p.sweep * s) / 8;
+          const q = local(
+            v(p.circle.cx + p.circle.r * Math.cos(t), p.circle.cy + p.circle.r * Math.sin(t)),
+          );
+          const level = Math.sqrt((q.x / a) ** 2 + (q.y / b) ** 2);
+          expect(Math.abs(level - 1)).toBeLessThanOrEqual((0.0006 * a) / b);
+        }
+      }
+      const expected = Math.PI * o.rx * o.ry;
+      expectRelative(chain.area, expected, 1e-3);
+      expectRelative(arrange(leaf(chain)).area, chain.area, 1e-9);
+      const wide: RegionNode = { kind: 'disc', circle: { cx: 0.3, cy: -0.2, r: 13 }, source };
+      const holed = arrange({ kind: 'subtract', children: [wide, leaf(chain)] });
+      expectRelative(holed.area, Math.PI * 13 * 13 - chain.area, 1e-9);
     });
   }
 });
 
 describe('ovalDeviation', () => {
   it.each([
-    [1.25, 0.007],
-    [2, 0.037],
-    [3, 0.077],
-  ])('at a:b = %f stays within %f of b', (ratio, share) => {
-    const b = 4;
-    expect(ovalDeviation(ratio * b, b)).toBeLessThanOrEqual(share * b);
-    expect(ovalDeviation(b, ratio * b)).toBeCloseTo(ovalDeviation(ratio * b, b), 14);
+    [10, 2.5],
+    [8, 4],
+    [6, 5],
+    [3, 1],
+    [1, 0.5],
+    [11.5, 11],
+    [2.5, 10],
+  ])('(%f, %f) stays within 0.0006 of the longer semi-axis', (rx, ry) => {
+    const dev = ovalDeviation(rx, ry);
+    expect(dev).toBeLessThanOrEqual(0.0006 * Math.max(rx, ry));
+    expect(ovalDeviation(ry, rx)).toBeCloseTo(dev, 14);
   });
 });
 
 describe('arc on an oval', () => {
-  // rx 3, ry 2: chord length d = sqrt(13), joints at ((d + 1) / 2, +-(d - 1) / 2).
-  const d = Math.sqrt(13);
-  const endR = (d * (d - 1)) / 6;
-  const sideR = (d * (d + 1)) / 4;
-  const jx = (d + 1) / 2;
-  const jy = (d - 1) / 2;
   const O = v(0, 0);
-  const near = (p: Vec, q: Vec, tol = 1e-9): void => {
-    expect(distance(p, q)).toBeLessThanOrEqual(tol);
-  };
-  const radiusOf = (p: ChainPiece | undefined): number =>
-    p?.kind === 'arc' ? p.circle.r : Number.NaN;
+  const base = ovalChain(O, 3, 2, 0).pieces;
+  const at = (angle: number): Vec => v(Math.cos(angle), Math.sin(angle));
   const dirOf = (c: Vec, p: Vec): Vec => {
     const len = distance(c, p);
     return v((p.x - c.x) / len, (p.y - c.y) / len);
   };
-  const full = (a: ChainPiece): number => (a.kind === 'arc' ? a.sweep : 0);
+  const full = (a: ChainPiece | undefined): number => (a?.kind === 'arc' ? a.sweep : Number.NaN);
 
   /** Points where the ray leaves the oval, found per piece by circle-line intersection. */
   const rayHits = (center: Vec, rx: number, ry: number, rotate: number, angle: number): Vec[] => {
-    const dir = v(Math.cos(angle), Math.sin(angle));
+    const dir = at(angle);
     const out: Vec[] = [];
     for (const piece of ovalChain(center, rx, ry, rotate).pieces) {
       if (piece.kind !== 'arc') {
@@ -251,68 +329,71 @@ describe('arc on an oval', () => {
     return out;
   };
 
-  it('0 to 180 degrees on a 3 by 2 oval is the upper half in three pieces', () => {
+  it('0 to 180 degrees is the upper half in 15 pieces: two half end arcs around 13 whole ones', () => {
     const pieces = ovalArc(O, 3, 2, 0, 0, Math.PI);
-    expect(pieces).toHaveLength(3);
+    expect(pieces).toHaveLength(15);
     near(pieces[0]?.start ?? O, v(3, 0));
-    near(pieces[0]?.end ?? O, v(jx, jy));
-    near(pieces[1]?.start ?? O, v(jx, jy));
-    near(pieces[1]?.end ?? O, v(-jx, jy));
-    near(pieces[2]?.start ?? O, v(-jx, jy));
-    near(pieces[2]?.end ?? O, v(-3, 0));
-    expect(pieces.map(radiusOf).map((r, k) => Math.abs(r - (k === 1 ? sideR : endR)))).toEqual([
-      expect.closeTo(0, 9),
-      expect.closeTo(0, 9),
-      expect.closeTo(0, 9),
-    ]);
-    // Half of an end arc spans alpha, the side arc pi - 2 alpha, with tan alpha = (side - 2) / (3 - end).
-    const alpha = Math.atan2(sideR - 2, 3 - endR);
-    expect(full(pieces[0] as ChainPiece)).toBeCloseTo(alpha, 9);
-    expect(full(pieces[1] as ChainPiece)).toBeCloseTo(Math.PI - 2 * alpha, 9);
-    expect(full(pieces[2] as ChainPiece)).toBeCloseTo(alpha, 9);
+    near(pieces[14]?.end ?? O, v(-3, 0));
+    pieces.forEach((p, k) => {
+      const next = pieces[k + 1];
+      if (next !== undefined) {
+        near(p.end, next.start, 1e-12);
+      }
+      expect(p.start.y).toBeGreaterThanOrEqual(-1e-12);
+      expect(p.end.y).toBeGreaterThanOrEqual(-1e-12);
+    });
+    for (let k = 1; k <= 13; k++) {
+      expect(circleOf(pieces[k])).toEqual(circleOf(base[k]));
+      expect(full(pieces[k])).toBeCloseTo(full(base[k]), 12);
+    }
+    for (const [k, whole] of [
+      [0, 0],
+      [14, 14],
+    ] as const) {
+      expect(circleOf(pieces[k])).toEqual(circleOf(base[whole]));
+      expect(full(pieces[k])).toBeCloseTo(full(base[whole]) / 2, 12);
+    }
   });
 
-  it('10 to 350 degrees starts and ends on the same end arc in five pieces', () => {
+  it('10 to 350 degrees ends on the requested directions and starts and ends on partial pieces', () => {
     const pieces = ovalArc(O, 3, 2, 0, (10 * Math.PI) / 180, (350 * Math.PI) / 180);
-    expect(pieces).toHaveLength(5);
-    const radii = pieces.map(radiusOf);
-    [endR, sideR, endR, sideR, endR].forEach((r, k) => {
-      expect(radii[k]).toBeCloseTo(r, 9);
-    });
     const first = pieces[0];
-    const last = pieces[4];
-    near(dirOf(O, first?.start ?? O), v(Math.cos(Math.PI / 18), Math.sin(Math.PI / 18)));
-    near(first?.end ?? O, v(jx, jy));
-    near(last?.start ?? O, v(jx, -jy));
-    near(dirOf(O, last?.end ?? O), v(Math.cos(Math.PI / 18), -Math.sin(Math.PI / 18)));
-    for (let k = 0; k < 4; k++) {
+    const last = pieces[pieces.length - 1];
+    near(dirOf(O, first?.start ?? O), at(Math.PI / 18));
+    near(dirOf(O, last?.end ?? O), at(-Math.PI / 18));
+    for (let k = 0; k + 1 < pieces.length; k++) {
       near((pieces[k] as ChainPiece).end, (pieces[k + 1] as ChainPiece).start, 1e-12);
     }
+    for (const end of [first, last]) {
+      const whole = base.find((p) => sameCircle(circleOf(p), circleOf(end)));
+      expect(whole).toBeDefined();
+      expect(full(end)).toBeLessThan(full(whole));
+    }
+    expect(pieces.some((p) => sameCircle(circleOf(p), circleOf(base[0])))).toBe(false);
   });
 
-  it('a direction through a joint starts on the next piece, ends on the previous one, and leaves no empty piece', () => {
-    const toJoint = Math.atan2(jy, jx);
-    const fromJoint = ovalArc(O, 3, 2, 0, toJoint, Math.PI);
-    expect(fromJoint).toHaveLength(2);
-    expect(radiusOf(fromJoint[0])).toBeCloseTo(sideR, 9);
-    near(fromJoint[0]?.start ?? O, v(jx, jy));
-    const intoJoint = ovalArc(O, 3, 2, 0, Math.PI / 18, toJoint);
-    expect(intoJoint).toHaveLength(1);
-    expect(radiusOf(intoJoint[0])).toBeCloseTo(endR, 9);
-    near(intoJoint[0]?.end ?? O, v(jx, jy));
-    for (const seam of [toJoint, Math.PI - toJoint, Math.PI + toJoint, -toJoint]) {
+  it.each([0, 1, 7, 14])(
+    'a direction through the end of piece %i starts on the next piece, ends on that piece, and leaves no empty piece',
+    (k) => {
+      const joint = (base[k] as ChainPiece).end;
+      const next = base[(k + 1) % base.length] as ChainPiece;
+      const seam = Math.atan2(joint.y, joint.x);
+      const fromSeam = ovalArc(O, 3, 2, 0, seam, seam + 2);
+      expect(circleOf(fromSeam[0])).toEqual(circleOf(next));
+      near(fromSeam[0]?.start ?? O, joint, 1e-12);
+      const intoSeam = ovalArc(O, 3, 2, 0, seam - 0.05, seam);
+      const lastPiece = intoSeam[intoSeam.length - 1];
+      expect(circleOf(lastPiece)).toEqual(circleOf(base[k]));
+      near(lastPiece?.end ?? O, joint, 1e-12);
       for (const other of [seam + 0.3, seam + 2, seam + 4, seam + 6]) {
-        const pieces = ovalArc(O, 3, 2, 0, seam, other);
-        for (const p of pieces) {
-          expect(distance(p.start, p.end)).toBeGreaterThan(1e-7);
-        }
-        const reverse = ovalArc(O, 3, 2, 0, other, seam);
-        for (const p of reverse) {
-          expect(distance(p.start, p.end)).toBeGreaterThan(1e-7);
+        for (const pieces of [ovalArc(O, 3, 2, 0, seam, other), ovalArc(O, 3, 2, 0, other, seam)]) {
+          for (const p of pieces) {
+            expect(distance(p.start, p.end)).toBeGreaterThan(1e-7);
+          }
         }
       }
-    }
-  });
+    },
+  );
 
   const shapes = [
     { rx: 3, ry: 2, rotate: 0 },
@@ -341,7 +422,7 @@ describe('arc on an oval', () => {
       const start = ovalArc(O, 8, 2, 0, angle, angle + 1)[0]?.start ?? O;
       expect(distance(O, start)).toBeGreaterThanOrEqual(2 - 1e-9);
       expect(distance(O, start)).toBeLessThanOrEqual(8 + 1e-9);
-      near(dirOf(O, start), v(Math.cos(angle), Math.sin(angle)));
+      near(dirOf(O, start), at(angle));
     }
   });
 
@@ -353,8 +434,8 @@ describe('arc on an oval', () => {
     const pieces = ovalArc(center, 2, 3, turn, from, to);
     const first = pieces[0]?.start ?? center;
     const last = pieces[pieces.length - 1]?.end ?? center;
-    near(dirOf(center, first), v(Math.cos(from), Math.sin(from)));
-    near(dirOf(center, last), v(Math.cos(to), Math.sin(to)));
+    near(dirOf(center, first), at(from));
+    near(dirOf(center, last), at(to));
     // The long semi-axis points 90 degrees past the turn, the short one along it.
     const major =
       ovalArc(center, 2, 3, turn, turn + Math.PI / 2, turn + Math.PI)[0]?.start ?? center;

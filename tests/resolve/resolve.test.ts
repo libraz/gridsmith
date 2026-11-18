@@ -1647,25 +1647,30 @@ describe('icon mode resolution', () => {
     expect(pill.area).toBeCloseTo(8 * 2 - (4 - Math.PI), 9);
   });
 
-  it('resolves an oval with its arc radii and degrees of rotation', () => {
+  it('resolves an oval as 28 tangent arcs with degrees of rotation', () => {
     const m = model(stroked([oval('o', 6, 4)]));
     const o = get(m, 'o', 'oval');
-    const d = Math.hypot(6, 4);
     expect(o.center).toEqual({ x: 0, y: 0 });
     expect([o.rx, o.ry, o.rotate]).toEqual([6, 4, 0]);
-    expect(o.end).toBeCloseTo((d * (d - 2)) / 12, 12);
-    expect(o.side).toBeCloseTo((d * (d + 2)) / 8, 12);
-    expect(o.pieces.map((p) => p.kind)).toEqual(['arc', 'arc', 'arc', 'arc']);
+    expect('end' in o || 'side' in o).toBe(false);
+    expect(o.pieces).toHaveLength(28);
+    expect(o.pieces.every((p) => p.kind === 'arc')).toBe(true);
     expect(o.joints.every((j) => j.kind === 'tangent')).toBe(true);
+    for (let k = 0; k < o.pieces.length; k++) {
+      const next = o.pieces[(k + 1) % o.pieces.length];
+      const gapAt = distance(o.pieces[k]?.end ?? { x: 0, y: 0 }, next?.start ?? { x: 1, y: 1 });
+      expect(gapAt).toBeLessThanOrEqual(1e-12);
+    }
     const first = o.pieces[0];
     if (first?.kind !== 'arc') {
       throw new Error('expected an arc');
     }
-    // The first arc is the right end arc, starting at its lower joint.
-    expect(first.circle.cx).toBeCloseTo(6 - o.end, 12);
+    // The first arc sits on the positive major-axis end and starts below the axis.
     expect(first.circle.cy).toBeCloseTo(0, 12);
+    expect(first.circle.cx + first.circle.r).toBeCloseTo(6, 12);
     expect(first.start.y).toBeLessThan(0);
-    expect(o.area).toBeGreaterThan(0);
+    expect(first.end.y).toBeGreaterThan(0);
+    expect(Math.abs(o.area - Math.PI * 6 * 4)).toBeLessThanOrEqual(0.001 * Math.PI * 6 * 4);
     expect(m.strokes[0]?.items[0]?.kind).toBe('chain');
   });
 
@@ -1678,8 +1683,8 @@ describe('icon mode resolution', () => {
       throw new Error('expected an arc');
     }
     expect(first.circle.cx).toBeCloseTo(1, 12);
-    expect(first.circle.cy).toBeCloseTo(2 + 6 - o.end, 12);
-    expect(first.circle.r).toBeCloseTo(o.end, 12);
+    expect(first.circle.cy).toBeGreaterThan(2);
+    expect(first.circle.cy + first.circle.r).toBeCloseTo(2 + 6, 12);
   });
 
   it('starts a taller oval at its top end arc', () => {
@@ -1689,7 +1694,7 @@ describe('icon mode resolution', () => {
       throw new Error('expected an arc');
     }
     expect(first.circle.cx).toBeCloseTo(0, 12);
-    expect(first.circle.cy).toBeCloseTo(6 - o.end, 12);
+    expect(first.circle.cy + first.circle.r).toBeCloseTo(6, 12);
   });
 
   it('rejects a polyline segment of zero length', () => {
@@ -1816,6 +1821,9 @@ describe('icon mode resolution', () => {
     expect(rep.copies).toHaveLength(6);
     for (const c of rep.copies) {
       expect(c.element.type).toBe('outline');
+      if (c.of === 'o' && c.element.type === 'outline') {
+        expect(c.element.pieces).toHaveLength(28);
+      }
       expect(Object.keys(c.element).sort()).toEqual(['area', 'id', 'joints', 'pieces', 'type']);
     }
     const quarter = rep.copies.find((c) => c.of === 's' && c.copy === 1)?.element;
@@ -2013,10 +2021,6 @@ describe('icon mode resolution', () => {
 });
 
 describe('arc on an oval', () => {
-  // rx 3, ry 2: chord length d = sqrt(13), joints at ((d + 1) / 2, +-(d - 1) / 2).
-  const d = Math.sqrt(13);
-  const jx = (d + 1) / 2;
-  const jy = (d - 1) / 2;
   const oval = { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 };
   const arcOn = (from: number, to: number): ShapeInput => ({
     id: 'a',
@@ -2032,17 +2036,53 @@ describe('arc on an oval', () => {
   const near = (p: Vec | undefined, x: number, y: number): void => {
     expect(distance(p ?? { x: Number.NaN, y: 0 }, { x, y })).toBeLessThanOrEqual(1e-9);
   };
+  // First-order distance from a point to the ellipse x^2/3^2 + y^2/2^2 = 1.
+  const gap = (p: Vec | undefined): number => {
+    const { x, y } = p ?? { x: Number.NaN, y: 0 };
+    const g = Math.hypot(x / 3, y / 2);
+    return Math.abs(g - 1) / (Math.hypot(x / 9, y / 4) / g);
+  };
+  const TOLERANCE = 0.0006 * 3;
+  const joined = (pieces: readonly { start: Vec; end: Vec }[]): void => {
+    for (let k = 1; k < pieces.length; k++) {
+      const gapAt = distance(
+        pieces[k - 1]?.end ?? { x: 0, y: 0 },
+        pieces[k]?.start ?? { x: 1, y: 1 },
+      );
+      expect(gapAt).toBeLessThanOrEqual(1e-12);
+    }
+  };
 
   it('ends on the oval where the rays at from and to leave it', () => {
     const m = model(stroked([oval, arcOn(0, 180)], ['a']));
     const el = get(m, 'a', 'oval_arc');
     expect(el.on).toBe('o');
-    expect(el.pieces).toHaveLength(3);
+    expect(el.pieces).toHaveLength(15);
     near(el.start, 3, 0);
     near(el.end, -3, 0);
-    near(el.pieces[0]?.end, jx, jy);
-    near(el.pieces[1]?.end, -jx, jy);
-    expect([el.from, el.to]).toEqual([0, 180]);
+    joined(el.pieces);
+    expect(el.pieces.every((p) => p.kind === 'arc' && p.ccw)).toBe(true);
+    for (const p of el.pieces) {
+      expect(p.end.y).toBeGreaterThanOrEqual(-1e-12);
+      expect(gap(p.end)).toBeLessThanOrEqual(TOLERANCE);
+    }
+    expect(el.from).toBeCloseTo(0, 9);
+    expect(el.to).toBeCloseTo(180, 9);
+  });
+
+  it('keeps the ends of a partial arc in their directions and on the ellipse', () => {
+    const el = get(model(stroked([oval, arcOn(30, 250)], ['a'])), 'a', 'oval_arc');
+    for (const [p, deg] of [
+      [el.start, 30],
+      [el.end, 250],
+    ] as const) {
+      const turn = (Math.atan2(p.y, p.x) * 180) / Math.PI - deg;
+      expect(Math.abs(((turn + 540) % 360) - 180)).toBeLessThanOrEqual(1e-9);
+      expect(gap(p)).toBeLessThanOrEqual(TOLERANCE);
+    }
+    joined(el.pieces);
+    expect(el.from).toBeCloseTo(30, 9);
+    expect(el.to).toBeCloseTo(250, 9);
   });
 
   it('reports the directions of the ends in [0, 360)', () => {
@@ -2085,8 +2125,10 @@ describe('arc on an oval', () => {
     near(el.center, 0, 0);
     near(el.start, -3, 0);
     near(el.end, 0, -2);
-    near(el.pieces[0]?.end, -jx, -jy);
-    expect([el.from, el.to]).toEqual([180, 270]);
+    expect(el.pieces).toHaveLength(8);
+    joined(el.pieces);
+    expect(el.from).toBeCloseTo(180, 9);
+    expect(el.to).toBeCloseTo(270, 9);
     const item = m.strokes[0]?.items[1];
     expect(item?.kind === 'chain' && item.closed).toBe(false);
   });
@@ -2102,12 +2144,13 @@ describe('arc on an oval', () => {
     if (el?.type !== 'oval_arc') {
       throw new Error('expected an oval_arc copy');
     }
-    expect(el.pieces).toHaveLength(2);
+    expect(el.pieces).toHaveLength(8);
     near(el.start, 0, 2);
     near(el.end, -3, 0);
-    near(el.pieces[0]?.end, -jx, jy);
+    joined(el.pieces);
     expect(el.pieces.every((p) => p.kind === 'arc' && p.ccw)).toBe(true);
-    expect([el.from, el.to]).toEqual([90, 180]);
+    expect(el.from).toBeCloseTo(90, 9);
+    expect(el.to).toBeCloseTo(180, 9);
   });
 
   it('drops a mirrored copy only when it lands on the original', () => {

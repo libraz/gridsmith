@@ -194,8 +194,6 @@ function describeElement(el: ResolvedElement): Record<string, unknown> {
         rx: round4(el.rx),
         ry: round4(el.ry),
         rotate: round4(el.rotate),
-        end: round4(el.end),
-        side: round4(el.side),
         area: round4(el.area),
       };
     case 'outline':

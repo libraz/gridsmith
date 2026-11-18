@@ -41,6 +41,8 @@ export const MAX_POINT_NESTING = 2;
 export const MAX_REGION_DEPTH = 8;
 /** Support curves a `mark` may hold after `repeat` expansion. */
 export const MAX_SUPPORT_CURVES = 256;
+/** Arc pieces in an oval's outline. */
+export const OVAL_CURVES = 28;
 /** Elements a `figure` may draw after `repeat` expansion. */
 export const MAX_DRAWN_ELEMENTS = 2048;
 /** Entries in the `shapes` list. */
@@ -710,7 +712,7 @@ const curveCount = (shape: Shape): number => {
     case 'rect':
       return 8;
     case 'oval':
-      return 4;
+      return OVAL_CURVES;
     default:
       return 1;
   }

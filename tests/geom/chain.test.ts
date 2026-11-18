@@ -431,13 +431,13 @@ describe('transformChain and sameChain', () => {
 describe('arc on an oval', () => {
   const ORIGIN = { x: 0, y: 0 };
   const center = { x: 1, y: 0 };
-  // Upper half of a 3 by 2 oval about (1, 0): right end arc half, side arc, left end arc half.
+  // Upper half of a 3 by 2 oval about (1, 0): half an end arc, thirteen whole arcs, half an end arc.
   const upper = ovalArc(center, 3, 2, 0, 0, Math.PI);
 
   it('a mirror reverses the order and travel of open pieces, so the ends stay joined', () => {
     // The oval is symmetric about x = 1, so the mirrored upper half is the upper half again.
     const across = transformPieces(upper, (p) => mirrorAcross(p, center, 90), true);
-    expect(across).toHaveLength(3);
+    expect(across).toHaveLength(15);
     across.forEach((p, i) => {
       const o = upper[i];
       expect(distance(p.start, o?.start ?? ORIGIN)).toBeLessThan(1e-12);
@@ -451,7 +451,7 @@ describe('arc on an oval', () => {
     // Mirroring in the x axis turns the upper half into the lower half, run from (-2, 0) to (4, 0).
     const lower = transformPieces(upper, (p) => mirrorAcross(p, ORIGIN, 0), true);
     expect(distance(lower[0]?.start ?? center, { x: -2, y: 0 })).toBeLessThan(1e-12);
-    expect(distance(lower[2]?.end ?? center, { x: 4, y: 0 })).toBeLessThan(1e-12);
+    expect(distance(lower[lower.length - 1]?.end ?? center, { x: 4, y: 0 })).toBeLessThan(1e-12);
     lower.forEach((p, i) => {
       expect(p.start.y).toBeLessThanOrEqual(1e-12);
       const next = lower[i + 1];
@@ -464,6 +464,6 @@ describe('arc on an oval', () => {
   it('a direct move keeps the order and shifts every piece', () => {
     const turned = transformPieces(upper, (p) => rotateAbout(p, center, 90), false);
     expect(distance(turned[0]?.start ?? ORIGIN, { x: 1, y: 3 })).toBeLessThan(1e-12);
-    expect(distance(turned[2]?.end ?? ORIGIN, { x: 1, y: -3 })).toBeLessThan(1e-12);
+    expect(distance(turned[turned.length - 1]?.end ?? ORIGIN, { x: 1, y: -3 })).toBeLessThan(1e-12);
   });
 });

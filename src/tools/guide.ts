@@ -100,7 +100,7 @@ paint holds fill and stroke layers in any order; a later layer draws over an ear
 ELEMENTS
 - polyline { through: [Point x 3..32] }: open broken line. Stroke only (or repeat of it). Two points: use line.
 - rect { corners: [Point, Point], r? }: axis-parallel rectangle from two opposite corners; r is the corner radius for all four corners (0.05 up to min(w, h)/2). Fill, stroke or repeat.
-- oval { center, rx, ry, rotate? }: four-arc egg; rotate is degrees counter-clockwise. rx and ry must differ by at least 0.05 and by a ratio of at most 4 (otherwise use circle). Fill, stroke or repeat.
+- oval { center, rx, ry, rotate? }: the outline follows the true ellipse as 28 circular arcs, within 0.06% of the longer semi-axis; rotate is degrees counter-clockwise. rx and ry must differ by at least 0.05 and by a ratio of at most 4 (otherwise use circle). Fill, stroke or repeat.
 - To fill and stroke one set of vertices, declare each as a point element once and reference the ids from points and from polyline.
 
 STROKE STYLE
@@ -134,7 +134,7 @@ const ELEMENT_NOTES: Record<string, string> = {
   polyline:
     'Open broken line through through: Point[] (3 to 32), consecutive points distinct. Stroke or repeat only; for two points use line.',
   rect: 'Axis-parallel rectangle through two opposite corners: Point[2]; r (optional) rounds all four corners, at most half the shorter side. Region leaf, stroke, erase or repeat of.',
-  oval: 'Four-arc oval: center, rx, ry (differ by at least 0.05, ratio at most 4), rotate degrees counter-clockwise. Region leaf, stroke, erase or repeat of.',
+  oval: 'Oval following the true ellipse as 28 circular arcs (within 0.06% of the longer semi-axis): center, rx, ry (differ by at least 0.05, ratio at most 4), rotate degrees counter-clockwise. Region leaf, stroke, erase or repeat of.',
 };
 
 const LAYER_NOTES: Record<string, string> = {
