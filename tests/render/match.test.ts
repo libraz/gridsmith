@@ -3,9 +3,11 @@ import {
   type Binary,
   binarize,
   compareMasks,
+  diffShare,
   type Mask,
   MatchError,
   placeReference,
+  type RgbaImage,
 } from '../../src/render/match.js';
 
 const HALF = 9;
@@ -378,5 +380,105 @@ describe('placeReference', () => {
     } catch (e) {
       expect((e as MatchError).code).toBe('empty_reference');
     }
+  });
+});
+
+describe('image fit', () => {
+  /** 24 px white image whose only black pixels are the top-left 6x6. */
+  const corner = (): Binary => {
+    const side = 24;
+    const rgba = new Uint8Array(side * side * 4).fill(255);
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 6; x++) {
+        rgba.set([0, 0, 0, 255], (y * side + x) * 4);
+      }
+    }
+    return binarize(rgba, side, side, {});
+  };
+
+  /** Centroid of the mask in canvas units (y up). */
+  const centroid = (mask: Mask, half: number): [number, number] => {
+    const cell = (2 * half) / mask.size;
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    for (let j = 0; j < mask.size; j++) {
+      for (let i = 0; i < mask.size; i++) {
+        if (mask.data[j * mask.size + i] === 1) {
+          n++;
+          sx += -half + (i + 0.5) * cell;
+          sy += half - (j + 0.5) * cell;
+        }
+      }
+    }
+    return [sx / n, sy / n];
+  };
+
+  const BOX: [number, number, number, number] = [-12, -12, 12, 12];
+
+  it('places the whole image in the box, keeping the corner where it was', () => {
+    const { mask, placed } = placeReference(corner(), BOX, 12, 'image');
+    const [cx, cy] = centroid(mask, 12);
+    expect(Math.abs(cx + 9)).toBeLessThan(0.1);
+    expect(Math.abs(cy - 9)).toBeLessThan(0.1);
+    expect(placed).toEqual(BOX);
+  });
+
+  it('shape fit scales the foreground box to the box instead', () => {
+    const { mask } = placeReference(corner(), BOX, 12, 'shape');
+    const [cx, cy] = centroid(mask, 12);
+    expect(Math.abs(cx)).toBeLessThan(0.1);
+    expect(Math.abs(cy)).toBeLessThan(0.1);
+  });
+
+  it('defaults to shape', () => {
+    const a = placeReference(corner(), BOX, 12);
+    const b = placeReference(corner(), BOX, 12, 'shape');
+    expect(a.placed).toEqual(b.placed);
+    expect(a.mask.data).toEqual(b.mask.data);
+  });
+
+  it('keeps the aspect ratio and centres a wide image in a square box', () => {
+    const rgba = new Uint8Array(20 * 10 * 4).fill(255);
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 5; x++) {
+        rgba.set([0, 0, 0, 255], (y * 20 + x) * 4);
+      }
+    }
+    const bin = binarize(rgba, 20, 10, {});
+    const { placed } = placeReference(bin, [-10, -10, 10, 10], 12, 'image');
+    expect(placed).toEqual([-10, -5, 10, 5]);
+  });
+});
+
+describe('pixel difference', () => {
+  const solid = (side: number, v: number): RgbaImage => ({
+    width: side,
+    height: side,
+    data: new Uint8Array(side * side * 4).fill(v),
+  });
+
+  it('gives 0 for identical images', () => {
+    expect(diffShare(solid(10, 7), solid(10, 7), 0)).toBe(0);
+  });
+
+  it('counts a single differing pixel of a 10x10 pair as 0.01', () => {
+    const a = solid(10, 255);
+    const b = solid(10, 255);
+    b.data[(3 * 10 + 4) * 4 + 1] = 0;
+    expect(diffShare(a, b, 32)).toBe(0.01);
+  });
+
+  it('counts a difference above the tolerance only, in any channel', () => {
+    const a = solid(10, 100);
+    const b = solid(10, 100);
+    b.data[3] = 132;
+    expect(diffShare(a, b, 32)).toBe(0);
+    b.data[3] = 133;
+    expect(diffShare(a, b, 32)).toBe(0.01);
+  });
+
+  it('throws when the sizes differ', () => {
+    expect(() => diffShare(solid(10, 0), solid(11, 0), 32)).toThrow(Error);
   });
 });

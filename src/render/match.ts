@@ -163,13 +163,15 @@ export function binarize(
 }
 
 /**
- * Scales the foreground bounding box (measured on pixel edges) to the largest size that keeps its
- * aspect ratio inside `box`, centres it there and samples it onto the canvas grid.
+ * Scales the placed extent to the largest size that keeps its aspect ratio inside `box`, centres it
+ * there and samples it onto the canvas grid. The extent is the foreground bounding box (measured on
+ * pixel edges) for `fit` "shape", or the whole image for "image".
  */
 export function placeReference(
   bin: Binary,
   box: Box,
   canvasHalf: number,
+  fit: 'shape' | 'image' = 'shape',
 ): { mask: Mask; placed: Box } {
   const { width, height, data } = bin;
   let minC = width;
@@ -185,6 +187,12 @@ export function placeReference(
         maxR = Math.max(maxR, r);
       }
     }
+  }
+  if (fit === 'image') {
+    minC = 0;
+    maxC = width - 1;
+    minR = 0;
+    maxR = height - 1;
   }
   const mask: Mask = { size: MASK_SIZE, data: new Uint8Array(MASK_SIZE * MASK_SIZE) };
   if (maxC < 0) {
@@ -224,6 +232,27 @@ export function placeReference(
     throw new MatchError('empty_reference');
   }
   return { mask, placed };
+}
+
+/** Straight RGBA pixels, row 0 is the top. */
+export type RgbaImage = { width: number; height: number; data: Uint8Array };
+
+/** Share of pixels where at least one RGBA channel differs by more than `tolerance`. Throws when the sizes differ. */
+export function diffShare(a: RgbaImage, b: RgbaImage, tolerance: number): number {
+  if (a.width !== b.width || a.height !== b.height) {
+    throw new Error(`image sizes differ: ${a.width}x${a.height} vs ${b.width}x${b.height}`);
+  }
+  const n = a.width * a.height;
+  let differing = 0;
+  for (let i = 0; i < n; i++) {
+    for (let c = 0; c < 4; c++) {
+      if (Math.abs((a.data[i * 4 + c] ?? 0) - (b.data[i * 4 + c] ?? 0)) > tolerance) {
+        differing++;
+        break;
+      }
+    }
+  }
+  return n === 0 ? 0 : differing / n;
 }
 
 type Component = {

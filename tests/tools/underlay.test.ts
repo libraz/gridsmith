@@ -327,6 +327,57 @@ describe('underlaySchema', () => {
   });
 });
 
+describe('fit option', () => {
+  const fitIssues = (fit: unknown) => {
+    const result = underlaySchema.safeParse({ path: '/a.png', fit });
+    return result.success ? [] : result.error.issues;
+  };
+
+  it.each([['shape'], ['image']])('accepts %s', (fit) => {
+    expect(underlaySchema.parse({ path: '/a.png', fit }).fit).toBe(fit);
+  });
+
+  it('defaults to shape', () => {
+    expect(underlaySchema.parse({ path: '/a.png' }).fit).toBe('shape');
+  });
+
+  it.each([['Shape'], ['both'], [''], [1], [null]])('rejects %j with the allowed values', (fit) => {
+    const issues = fitIssues(fit);
+    expect(issues.map((i) => [...i.path])).toEqual([['fit']]);
+    expect(issues[0]?.message).toContain('underlay.fit is invalid');
+    expect(issues[0]?.message).toContain('allowed: "shape" or "image")');
+  });
+
+  it('reaches placement through buildUnderlay', async () => {
+    const side = 24;
+    const rgb = new Uint8Array(side * side * 3).fill(255);
+    for (let y = 0; y < 6; y++) {
+      for (let x = 0; x < 6; x++) {
+        rgb.fill(0, (y * side + x) * 3, (y * side + x) * 3 + 3);
+      }
+    }
+    const file = await checkUnderlayFile(await write('corner.png', encodeRgbPng(side, side, rgb)));
+    const box = [-12, -12, 12, 12];
+    const shape = buildUnderlay(file, argsOf({ path: 'x', box }), 12, 12);
+    const image = buildUnderlay(file, argsOf({ path: 'x', box, fit: 'image' }), 12, 12);
+    expect(shape.report.placed).toEqual([-12, -12, 12, 12]);
+    expect(image.report.placed).toEqual([-12, -12, 12, 12]);
+    expect(Object.keys(image.report)).toEqual(Object.keys(shape.report));
+    expect(image.reference.data).not.toEqual(shape.reference.data);
+    // Top-left quadrant only: the corner stays in the corner.
+    const half = image.reference.size / 2;
+    let outside = 0;
+    for (let j = 0; j < image.reference.size; j++) {
+      for (let i = 0; i < image.reference.size; i++) {
+        if (image.reference.data[j * image.reference.size + i] === 1 && (i >= half || j >= half)) {
+          outside++;
+        }
+      }
+    }
+    expect(outside).toBe(0);
+  });
+});
+
 describe('buildUnderlay', () => {
   const fileOf = async (name: string, bytes: Uint8Array) =>
     checkUnderlayFile(await write(name, bytes));

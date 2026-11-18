@@ -208,9 +208,15 @@ export const underlaySchema = z.strictObject(
       .max(254, { error: complain('underlay.threshold', 'an integer from 1 to 254') })
       .optional(),
     invert: z.boolean({ error: complain('underlay.invert', 'true or false') }).optional(),
+    fit: z
+      .enum(['shape', 'image'], { error: complain('underlay.fit', '"shape" or "image"') })
+      .default('shape'),
   },
   {
-    error: complain('underlay', 'an object with "path" and optional "box", "threshold", "invert"'),
+    error: complain(
+      'underlay',
+      'an object with "path" and optional "box", "threshold", "invert", "fit"',
+    ),
   },
 );
 
@@ -264,7 +270,7 @@ export function buildUnderlay(
       threshold: args.threshold,
       invert: args.invert,
     });
-    const { mask, placed } = placeReference(bin, box, canvasHalf);
+    const { mask, placed } = placeReference(bin, box, canvasHalf, args.fit);
     return {
       reference: mask,
       report: {
