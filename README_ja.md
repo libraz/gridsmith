@@ -1,6 +1,6 @@
 # gridsmith
 
-**gridsmith は、JSON の作図仕様からロゴマークと魔法陣の図形を描きます。** モデルがグリッド上の円、接円、線、円弧、正多角形を宣言すると、gridsmith が幾何を解き、作図規則（少数の半径比、粗いグリッド、n 回対称）で検査して、PNG と SVG を構築シートとともに返します。
+**gridsmith は、JSON の作図仕様からロゴマーク、魔法陣の図形、24 単位の UI アイコンを描きます。** モデルがグリッド上の円、接円、線、円弧、正多角形（アイコンでは折れ線、四角、楕円も）を宣言すると、gridsmith が幾何を解き、作図規則（少数の半径比、粗いグリッド、n 回対称）で検査して、PNG と SVG を構築シートとともに返します。
 
 stdio の MCP サーバーです。
 
@@ -10,13 +10,14 @@ stdio の MCP サーバーです。
 
 | ツール | 入力 | 返すもの |
 |---|---|---|
-| `gridsmith_guide` | `topic`: `overview`（既定）、`spec`、`rules`、`examples` | 早見表、仕様の JSON Schema、規則表、規則を通る完全な例 |
+| `gridsmith_guide` | `topic`: `overview`（既定）、`spec`、`rules`、`examples`、`icon` | 早見表、仕様の JSON Schema、規則表、規則を通る完全な例、アイコンモードの解説 |
 | `gridsmith_render` | `spec`（オブジェクト、または 256 KB 以下の JSON ファイルの絶対パス）、`views` と `underlay`（どちらも省略可） | JSON レポートと指定したビュー。何も書き込みません |
 | `gridsmith_export` | `spec`、`dir`（絶対パス）、`name`、`overwrite`（省略可） | `dir` に書き出したファイル |
+| `gridsmith_import` | `segments`（アイコンのパスセグメント 1〜64 個）、`snap`（省略可、既定は true） | アイコンの仕様、状態、違反、元の絵との画素差。何も書き込みません |
 
-**`gridsmith_render`** は、JSON レポート（解決済みの幾何、違反、適用済みの例外、近接接触のヒント、レイヤーごとの統計、`exportable`）に続けて、指定した順にビューを返します。PNG ビューは `sheet`（構築シート）、`final`（512 px）、`sizes`（mark のみ。64、32、16 px を並べたもの）、`guides`（完成図に構築要素をすべて重ねたもの、512 px）、`match`（完成図と `underlay` の画像の比較、512 px。後述）です。SVG ビューはテキストで返ります（`svg`、`sheet_svg`、`guides_svg`）。60000 文字を超える SVG は返さず、`truncated` に記載します。既定は mark なら `sheet` と `sizes`、figure なら `sheet` と `final` です。規則違反があっても報告したうえで描画します。
+**`gridsmith_render`** は、JSON レポート（解決済みの幾何、違反、適用済みの例外、近接接触のヒント、レイヤーごとの統計、`exportable`）に続けて、指定した順にビューを返します。PNG ビューは `sheet`（構築シート）、`final`（512 px）、`sizes`（mark は 64、32、16 px を並べたもの。アイコンは画素プレビューで、後述。figure では使えません）、`guides`（完成図に構築要素をすべて重ねたもの、512 px）、`match`（完成図と `underlay` の画像の比較、512 px。後述）です。SVG ビューはテキストで返ります（`svg`、`sheet_svg`、`guides_svg`）。アイコンにはさらに、パスデータを JSON 文字列で返す `segments` があります。60000 文字を超えるテキストのビューは返さず、`truncated` に記載します。既定は mark とアイコンなら `sheet` と `sizes`、figure なら `sheet` と `final` です。規則違反があっても報告したうえで描画します。
 
-**`gridsmith_export`** は `<name>.svg`、`<name>-sheet.svg`、`<name>-guides.svg`、`<name>.spec.json` と PNG を書き出します。PNG は mark なら `-512`、`-64`、`-32`、`-16`、figure なら `-1024` です。違反が残る仕様は拒否します。出力先に同名のファイルがあるときも、`overwrite` が true でなければ拒否します。`dir` がなければ作成します。
+**`gridsmith_export`** は `<name>.svg`、`<name>-sheet.svg`、`<name>-guides.svg`、`<name>.spec.json` と PNG を書き出します。PNG は mark なら `-512`、`-64`、`-32`、`-16`、figure なら `-1024`、アイコンなら `-512`、`-48`、`-24`、`-16` です。アイコンでは `<name>.segments.json` も書き出します（「アイコン」を参照）。違反が残る仕様は拒否します。出力先に同名のファイルがあるときも、`overwrite` が true でなければ拒否します。`dir` がなければ作成します。
 
 ## インストール
 
@@ -53,7 +54,7 @@ yarn gallery   # src/guide/examples.ts の例から docs/gallery/ を再生成
 
 仕様は `version`（1）、`mode`、`grid`、`shapes`、`paint` と、省略可能な `concept`、`exceptions` からなります。正確なスキーマは `gridsmith_guide` の `spec` で取得できます。
 
-**グリッドと座標。** `grid.divisions` は 4、6、8 のいずれかで、単位円の半径 R（モジュール数）になります。`grid.margin` は 0 から 4 モジュール（既定 1）で、キャンバスは半辺 R + margin の正方形です。原点はキャンバス中心、x は右、y は上向きで、角度は +x から反時計回りの度数です。
+**グリッドと座標。** `grid.divisions` は 4、6、8 のいずれか（アイコンは 12）で、単位円の半径 R（モジュール数）になります。`grid.margin` は 0 から 4 モジュール（既定 1。アイコンは 0 だけで、これが既定です）で、キャンバスは半辺 R + margin の正方形です。原点はキャンバス中心、x は右、y は上向きで、角度は +x から反時計回りの度数です。
 
 **要素**（`shapes`、最大 64 個。参照できるのは先に宣言した要素だけです）。
 
@@ -67,6 +68,9 @@ yarn gallery   # src/guide/examples.ts の例から docs/gallery/ を再生成
 | `polygon` | 円 `in` に内接する正 `n` 角形。`step` が 2 以上なら星形、`rotate` は度数 |
 | `points` | 指定した点を通る閉じた多角形 |
 | `outline` | 先に宣言した円と線から切り出した、閉じた1本の縁。接点か指定した角でつなぎます（後述） |
+| `polyline` | 3 から 32 点を通る開いた折れ線。stroke レイヤーだけで使えます |
+| `rect` | 向かい合う 2 隅 `corners` を結ぶ、軸に平行な四角。`r` を付けると 4 隅すべてが丸くなります |
+| `oval` | 半軸 `rx`、`ry` の楕円で、4 本の円弧でできています。`rotate` は度数、縦横比は 4 まで |
 | `repeat` | `of` を `center` まわりに `n` 回回転した複製。`mirror` を付けると角度 `axis` の線に関する反転も加わります |
 
 **Length。** 0.05 から 64 モジュールの数値、または式です。式は `R` か `<circle id>.r` に、`*` または `/` と、2 から 16、`sqrt2`、`sqrt3`、`phi`、`phi2` のいずれかを続けます。例: `"R/2"`、`"outer.r*sqrt3/2"`。空白、括弧、`+`、`-` は使えません。
@@ -75,21 +79,25 @@ yarn gallery   # src/guide/examples.ts の例から docs/gallery/ を再生成
 
 **mark** は塗りつぶした領域を描きます。`paint: [{ "fill": Region, "color": "#rrggbb" }]` と書きます。Region は id（円、多角形、points、outline、またはそれらの repeat）、半平面を表す `{ "half": 線, "toward": 点 }`、`{ "union" | "intersect" | "subtract": [Region, ...] }` のいずれかで、有界でなければなりません。
 
-**figure** は線を描きます。`{ "stroke": [id], "width": Length, "color": ... }` と書きます。円は円周、線は線分、円弧は円周の一部、多角形は輪郭、repeat はすべての複製として描かれます。`{ "erase": [id] }` レイヤー（先頭には置けません）は、指定した円、多角形、points の内側にある先行レイヤーをすべて隠すので、後のレイヤーで帯の上にメダリオンを描けます。どのレイヤーにも描かれない円は補助線として使えます。
+**figure** は線を描きます。`{ "stroke": [id], "width": Length, "color": ..., "cap"?, "join"?, "dash"? }` と書きます。円は円周、線は線分、円弧は円周の一部、多角形は輪郭、repeat はすべての複製として描かれます。`{ "erase": [id] }` レイヤー（先頭には置けません）は、指定した円、多角形、points の内側にある先行レイヤーをすべて隠すので、後のレイヤーで帯の上にメダリオンを描けます。どのレイヤーにも描かれない円は補助線として使えます。
 
-mark と figure は混在できません。mark は `fill` レイヤーだけ、figure は `stroke` と `erase` だけを受け付けます。違反は `exceptions` の `{ rule, target, reason }` で許容できます。reason は構築シートに印字されます。
+**線の指定**（figure とアイコンの stroke レイヤー）。`cap` は `"round"`（既定）、`"butt"`、`"square"`、`join` は `"round"`（既定）、`"miter"`、`"bevel"` のいずれかです。`dash` は `[線の長さ, 隙間]`（モジュール単位）で、省略すると実線になります。破線は要素の最初の点から、書いた順に始まります。円は右端から時計回りです。
+
+mark は `fill` レイヤーだけ、figure は `stroke` と `erase` だけを受け付けます。アイコンは `fill` と `stroke` を任意の順に並べられます（`erase` は使えません）。違反は `exceptions` の `{ rule, target, reason }` で許容できます。reason は構築シートに印字されます。
 
 ### 規則
 
 | 規則 | 内容 |
 |---|---|
-| `ratio_count` | 半径と線幅で使う比は最大 3 種類。"R/2" と "R*2" は同じ比として数えます |
-| `circle_count` | 円は mark で最大 8 個、figure で最大 16 個。円弧は数えません。塗りから届く `outline` を持つ mark は 40 個まで |
-| `off_grid` | 数値の座標と半径は 0.5 モジュール（mark）または 0.25（figure）の倍数 |
-| `angle` | 角度は n が 2、3、4、5、6、8、10、12、20、24 のいずれかのときの 180/n の倍数。`polygon.n` と `repeat.n` も同じ集合から選ぶ |
-| `off_canvas` | 描画物はキャンバスの内側に収まる |
-| `empty_fill` | fill レイヤーは閉じた輪郭を1つ以上生む（mark） |
-| `thin_stroke` | キャンバスを 512 px で描いたとき、線幅が 1 px 以上（figure） |
+| `ratio_count` | 半径と線幅で使う比は最大 3 種類。"R/2" と "R*2" は同じ比として数えます。アイコンには適用しません |
+| `circle_count` | 円は mark で最大 8 個、figure で最大 16 個、アイコンで最大 40 個。円弧は数えません。塗りから届く `outline` を持つ mark は 40 個まで |
+| `off_grid` | 数値の座標と半径は 0.5 モジュール（mark、アイコン）または 0.25（figure）の倍数。線幅と `dash` は対象外 |
+| `angle` | 角度（`oval.rotate` を含む）は n が 2、3、4、5、6、8、10、12、20、24 のいずれかのときの 180/n の倍数。`polygon.n` と `repeat.n` も同じ集合から選ぶ |
+| `off_canvas` | 描画物はキャンバスの内側に収まる。線は幾何から線幅の半分まで外へ出る分も数える |
+| `empty_fill` | fill レイヤーは閉じた輪郭を1つ以上生む（mark、アイコン） |
+| `thin_stroke` | キャンバスを 512 px で描いたとき、線幅が 1 px 以上（figure）。アイコンでは線幅が 0.5 モジュール以上 |
+| `uneven_steps` | 3 区間以上の折れ線が一方の軸に沿って一定の向きに進むとき、その軸の刻みが等しい（figure、アイコン）。もう一方の軸で動かない区間を含む折れ線は検査しません |
+| `width_count` | 1 つの仕様で使う線幅は最大 3 種類（アイコン） |
 | `unused_shape` | すべての要素が paint レイヤーから参照でたどれる |
 | `unused_exception` | どの違反にも一致しない例外は報告される。この規則自体は許容できない |
 
@@ -97,9 +105,28 @@ mark と figure は混在できません。mark は `fill` レイヤーだけ、
 
 **`outline`** は、座標を書かずに、構築用の円から具象的なシルエットを描きます。`through` に 2 から 64 個の部品を、内側が左になる反時計回りで並べます。部品は id、または `{ "on": id, "concave": true, "corner": 点 }` です。`on` は円、`tangent_circle`、`line` のいずれかです。円の部品は外側にふくらみ、`concave: true` なら内側へえぐります。各部品は次の部品と出会う所で終わり、最後の部品は最初の部品と出会います。接する部品は接点でつなぎ、交わる部品は角でつなぎます。2つの交点のどちらを使うかは `corner` で選びます。`outline` は `points` が使える所で使えます。mark の fill、figure の stroke と erase、`repeat` です。レポートの `geometry` には、部品、角（符号つきの度数で、左に曲がる角が正）、面積が載ります。
 
-**`underlay`** は、描いた図形と参照画像を比べます。`gridsmith_render` に `underlay: { "path": ..., "box"?, "threshold"?, "invert"? }` を渡します。`path` は 4 MiB 以下、1600 万画素以下の PNG または JPEG の絶対パスです。前景はアルファチャンネルから、なければ輝度の大津の二値化で求めます（`threshold` の 1 から 254 で上書きでき、`invert` で前景と背景を入れ替えます）。前景の外接矩形を `box`（モジュール単位、既定はグリッドの正方形）に収め、構築シートでは完成図の後ろにオレンジで表示します。不透明な画素はすべてインクとして数えるので、穴は白で塗らず `subtract` で抜いてください。
+**`underlay`** は、描いた図形と参照画像を比べます。`gridsmith_render` に `underlay: { "path": ..., "box"?, "threshold"?, "invert"?, "fit"? }` を渡します。`path` は 4 MiB 以下、1600 万画素以下の PNG または JPEG の絶対パスです。前景はアルファチャンネルから、なければ輝度の大津の二値化で求めます（`threshold` の 1 から 254 で上書きでき、`invert` で前景と背景を入れ替えます）。前景の外接矩形を `box`（モジュール単位、既定はグリッドの正方形）に収め、構築シートでは完成図の後ろにオレンジで表示します。`fit` は `"shape"`（既定）または `"image"` で、`"image"` は前景ではなく画像全体を `box` に置きます。24 単位のキャンバス全体を描いた PNG に向いています。不透明な画素はすべてインクとして数えるので、穴は白で塗らず `subtract` で抜いてください。
 
 下絵を渡すと、レポートに `match` が加わります。`iou`（1 なら完全に一致）、割合で表した `missing` と `excess`、`offset`（図形の中心から参照の中心を引いたもの）、`grid`（12 行、上から順に。`-` が不足、`+` が余分、`.` が一致）、最大 3 つの `blobs`（種別、参照の面積に対する割合、中心、外接矩形）、`underlay`（実際に使った配置、しきい値、極性）です。`match` ビューは 512 px の PNG で、両方にある部分は濃いグレー、参照だけはオレンジ、図形だけは青です。最も大きい blob かグリッドの領域を直して、再度描画してください。figure は、塗りのシルエットではなく線画と比べてください。`gridsmith_export` は下絵を受け付けません。
+
+## アイコン
+
+`mode: "icon"` は 24 単位の UI アイコンを描きます。`grid.divisions` は 12、余白はなしで、1 モジュールは 24 px 表示での 1 px です。座標は原点が中心、y が上向きのままで、範囲は -12 から 12 です。SVG の座標（0 から 24、y が下向き）にするには `x + 12`、`12 - y` とします。`paint` には `fill` と `stroke` のレイヤーを任意の順に並べ、後のレイヤーが上に重なります。同じ形を塗って縁取るときは、それぞれのレイヤーを 1 つずつ書きます。折れ線の端にある塗りの点のように頂点を共有する要素は、1 つの `point` を id で参照します。詳しい解説は `gridsmith_guide` の `icon` で取得できます。
+
+<p><img src="docs/gallery/line-chart-sheet.png" alt="line-chart の構築シート" width="300"> <img src="docs/gallery/line-chart-sizes.png" alt="line-chart の 24 px と 16 px を 8 倍に拡大したもの" width="300"></p>
+
+アイコンの `sizes` ビューは、最終の SVG を白地に 24 px と 16 px で描き、どちらも最近傍補間で 8 倍に拡大して並べた画像（336 x 192 px）です。画素が 1 つずつ見えます。`segments` ビューと `gridsmith_export` の `<name>.segments.json` は、アイコンのパスデータです。セグメントはペイントレイヤーごとに 1 つで、`paint` の順に並びます。座標は 24 単位のキャンバスで、原点は左上、y は下向きです。各セグメントは `d`（絶対座標の `M`、`L`、`A`、`Z`）を持ち、塗りなら `fill` と `fillRule`、線なら `stroke`、`strokeWidth`、`strokeLinecap`、`strokeLinejoin`（破線なら `strokeDasharray` も）を持ちます。セグメントごとに `path` 要素を 1 つ描く利用側では、最終の SVG と同じ絵になります。
+
+```json
+{ "canvas": 24,
+  "segments": [
+    { "d": "M2 5L22 5L22 19L2 19Z", "fill": "#ffffff", "fillRule": "evenodd" },
+    { "d": "M4 15L8 11L12 14L16 8", "stroke": "#107c41", "strokeWidth": 1.3,
+      "strokeLinecap": "round", "strokeLinejoin": "round" }
+  ] }
+```
+
+`gridsmith_import` は、既存のアイコンからこの形のセグメントを受け取り、仕様を返します。曲線は直線と円弧になり、仕様は 0.5 の格子と折れ線の等間隔に丸められます（`snap: false` で丸めません）。`status` は `clean`、`violations`、`partial`（読み飛ばしたサブパスがあります。直線と円弧が混ざるパスは `pieces` に部品を並べます）、`failed` のいずれかです。`diff` は元の絵と違う画素の割合で、`faithful` は丸める前の同じ割合です。
 
 ## ギャラリー
 
@@ -160,6 +187,18 @@ mark と figure は混在できません。mark は `fill` レイヤーだけ、
 <p><img src="docs/gallery/whale-guides.png" alt="whale のガイド線付き" width="300"></p>
 
 仕様: [`docs/gallery/whale.json`](docs/gallery/whale.json)
+
+### icon
+
+#### line-chart
+
+<p><img src="docs/gallery/line-chart.png" alt="line-chart" width="300"> <img src="docs/gallery/line-chart-sheet.png" alt="line-chart の構築シート" width="300"></p>
+
+角丸（半径 3）の `rect` の板を塗り、その上に 2 つの線レイヤーを重ねています。1 つは軸で、角を miter、線端を butt にした `polyline` です。もう 1 つは、x が 4 モジュールずつ離れた 4 つの `point` を通る右上がりの折れ線です。端の点は、最後の点を中心にした半径 1.5 の塗りの円で、折れ線と点が id で同じ点を共有しています。
+
+<p><img src="docs/gallery/line-chart-sizes.png" alt="line-chart の画素プレビュー" width="300"> <img src="docs/gallery/line-chart-guides.png" alt="line-chart のガイド線付き" width="300"></p>
+
+仕様: [`docs/gallery/line-chart.json`](docs/gallery/line-chart.json)
 
 ### figure
 

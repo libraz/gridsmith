@@ -2,7 +2,7 @@
   "name": "gridsmith",
   "version": "0.1.0",
   "private": true,
-  "description": "MCP server that draws logo marks and magic-circle figures from geometric construction rules.",
+  "description": "MCP server that draws logo marks, magic-circle figures and UI icons from geometric construction rules.",
   "type": "module",
   "main": "./dist/index.js",
   "bin": "./dist/index.js",

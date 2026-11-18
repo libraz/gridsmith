@@ -1,6 +1,6 @@
 # gridsmith
 
-**gridsmith draws logo marks and magic-circle figures from a JSON construction spec.** A model declares circles on a grid, tangent circles, lines, arcs and regular polygons; gridsmith solves the geometry, checks it against construction rules (a few radius ratios, a coarse grid, n-fold symmetry) and returns PNG and SVG together with a construction sheet.
+**gridsmith draws logo marks, magic-circle figures and 24-unit UI icons from a JSON construction spec.** A model declares circles on a grid, tangent circles, lines, arcs, regular polygons and, for icons, polylines, rectangles and ovals; gridsmith solves the geometry, checks it against construction rules (a few radius ratios, a coarse grid, n-fold symmetry) and returns PNG and SVG together with a construction sheet.
 
 It is an MCP server over stdio.
 
@@ -10,13 +10,14 @@ It is an MCP server over stdio.
 
 | Tool | Takes | Returns |
 |---|---|---|
-| `gridsmith_guide` | `topic`: `overview` (default), `spec`, `rules` or `examples` | The cheat sheet, the JSON Schema of a spec, the rule table, or the complete example specs |
+| `gridsmith_guide` | `topic`: `overview` (default), `spec`, `rules`, `examples` or `icon` | The cheat sheet, the JSON Schema of a spec, the rule table, the complete example specs, or the icon-mode reference |
 | `gridsmith_render` | `spec` (an object, or an absolute path to a JSON file of at most 256 KB), `views` and `underlay` (both optional) | A JSON report and the requested views. Writes nothing |
 | `gridsmith_export` | `spec`, `dir` (absolute), `name`, `overwrite` (optional) | The files written to `dir` |
+| `gridsmith_import` | `segments` (1 to 64 path segments of an icon), `snap` (optional, default true) | An icon spec, its status, violations and the pixel difference from the original. Writes nothing |
 
-**`gridsmith_render`** returns a JSON report (resolved geometry, violations, applied exceptions, near-tangent hints, per-layer statistics, `exportable`) followed by the views in the order requested. PNG views are `sheet` (construction sheet), `final` (512 px), `sizes` (mark only: 64, 32 and 16 px side by side), `guides` (the final drawing with every construction element over it, 512 px) and `match` (the drawing against an `underlay` image, 512 px; see below). SVG views are returned as text: `svg`, `sheet_svg` and `guides_svg`. An SVG longer than 60000 characters is not returned; it is listed in `truncated` instead. The default is `sheet` and `sizes` for a mark, `sheet` and `final` for a figure. Rule violations are reported and the drawing is still produced.
+**`gridsmith_render`** returns a JSON report (resolved geometry, violations, applied exceptions, near-tangent hints, per-layer statistics, `exportable`) followed by the views in the order requested. PNG views are `sheet` (construction sheet), `final` (512 px), `sizes` (a mark: 64, 32 and 16 px side by side; an icon: a pixel preview, see below; not for a figure), `guides` (the final drawing with every construction element over it, 512 px) and `match` (the drawing against an `underlay` image, 512 px; see below). SVG views are returned as text: `svg`, `sheet_svg` and `guides_svg`. An icon also has `segments`, its path data as a JSON string. A text view longer than 60000 characters is not returned; it is listed in `truncated` instead. The default is `sheet` and `sizes` for a mark or an icon, `sheet` and `final` for a figure. Rule violations are reported and the drawing is still produced.
 
-**`gridsmith_export`** writes `<name>.svg`, `<name>-sheet.svg`, `<name>-guides.svg`, `<name>.spec.json` and PNGs: `-512`, `-64`, `-32` and `-16` for a mark, `-1024` for a figure. It refuses a spec that still has violations, and refuses when any target file exists unless `overwrite` is true. `dir` is created if missing.
+**`gridsmith_export`** writes `<name>.svg`, `<name>-sheet.svg`, `<name>-guides.svg`, `<name>.spec.json` and PNGs: `-512`, `-64`, `-32` and `-16` for a mark, `-1024` for a figure, `-512`, `-48`, `-24` and `-16` for an icon. An icon also gets `<name>.segments.json`; see Icons. It refuses a spec that still has violations, and refuses when any target file exists unless `overwrite` is true. `dir` is created if missing.
 
 ## Installation
 
@@ -53,7 +54,7 @@ The files in `docs/gallery/` are generated; do not edit them by hand.
 
 A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `concept` and `exceptions`. `gridsmith_guide` with `spec` returns the exact schema.
 
-**Grid and coordinates.** `grid.divisions` is 4, 6 or 8 and sets R, the radius of the unit circle in modules. `grid.margin` is 0 to 4 modules (default 1), so the canvas is a square of half side R + margin. The origin is the canvas centre, x points right and y up. Angles are degrees counter-clockwise from +x.
+**Grid and coordinates.** `grid.divisions` is 4, 6 or 8 (12 for an icon) and sets R, the radius of the unit circle in modules. `grid.margin` is 0 to 4 modules (default 1; an icon takes only 0, its default), so the canvas is a square of half side R + margin. The origin is the canvas centre, x points right and y up. Angles are degrees counter-clockwise from +x.
 
 **Elements** (`shapes`, at most 64; each refers only to earlier ones).
 
@@ -67,6 +68,9 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 | `polygon` | Regular `n`-gon inscribed in circle `in`; `step` of 2 or more gives a star; `rotate` in degrees |
 | `points` | Closed polygon through listed points |
 | `outline` | One closed edge cut from circles and lines declared earlier, joined by tangency or at chosen corners; see below |
+| `polyline` | Open polyline through 3 to 32 points; stroke layers only |
+| `rect` | Axis-parallel rectangle between two opposite `corners`; `r` rounds all four corners |
+| `oval` | Oval of semi-axes `rx` and `ry` made of four circular arcs, turned by `rotate` degrees; the ratio is at most 4 |
 | `repeat` | `n` rotated copies of `of` about `center`; `mirror` adds the reflection across the line at angle `axis` |
 
 **Length.** A number from 0.05 to 64 modules, or an expression: `R` or `<circle id>.r`, followed by `*` or `/` with 2 to 16, `sqrt2`, `sqrt3`, `phi` or `phi2`. For example `"R/2"` or `"outer.r*sqrt3/2"`. No spaces, parentheses, `+` or `-`.
@@ -75,21 +79,25 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 
 **mark** paints filled regions: `paint: [{ "fill": Region, "color": "#rrggbb" }]`. A Region is an id (a circle, polygon, points, outline or a repeat of those), `{ "half": line, "toward": point }` for a half-plane, or `{ "union" | "intersect" | "subtract": [Region, ...] }`. A region must be bounded.
 
-**figure** paints strokes: `{ "stroke": [ids], "width": Length, "color": ... }`. Circles draw as circumferences, lines as segments, arcs as partial circumferences, polygons as outlines and a repeat as every copy. An `{ "erase": [ids] }` layer (never first) hides every earlier layer inside the listed circles, polygons or points, so later layers can draw medallions over bands. Circles that nothing strokes may serve as helpers.
+**figure** paints strokes: `{ "stroke": [ids], "width": Length, "color": ..., "cap"?, "join"?, "dash"? }`. Circles draw as circumferences, lines as segments, arcs as partial circumferences, polygons as outlines and a repeat as every copy. An `{ "erase": [ids] }` layer (never first) hides every earlier layer inside the listed circles, polygons or points, so later layers can draw medallions over bands. Circles that nothing strokes may serve as helpers.
 
-A mark and a figure never mix: a mark takes only `fill` layers, a figure only `stroke` and `erase`. A violation can be excused with an `exceptions` entry `{ rule, target, reason }`; the reason is printed on the construction sheet.
+**Stroke options** (stroke layers of a figure or an icon): `cap` is `"round"` (default), `"butt"` or `"square"`; `join` is `"round"` (default), `"miter"` or `"bevel"`; `dash` is `[length, gap]` in modules, and a stroke is solid without it. A dash starts at the first point of the element, in the order it is written; a circle starts at its rightmost point and runs clockwise.
+
+A mark takes only `fill` layers, a figure only `stroke` and `erase`, and an icon `fill` and `stroke` in any order (no `erase`). A violation can be excused with an `exceptions` entry `{ rule, target, reason }`; the reason is printed on the construction sheet.
 
 ### Rules
 
 | Rule | Meaning |
 |---|---|
-| `ratio_count` | At most 3 distinct ratios across radii and widths; "R/2" and "R*2" count once |
-| `circle_count` | At most 8 circles in a mark, 16 in a figure; arcs do not count. A mark whose fill reaches an `outline` may have 40 |
-| `off_grid` | Numeric coordinates and radii are multiples of 0.5 module (mark) or 0.25 (figure) |
-| `angle` | Angles are multiples of 180/n for n in 2, 3, 4, 5, 6, 8, 10, 12, 20, 24; `polygon.n` and `repeat.n` come from the same set |
-| `off_canvas` | Everything drawn stays inside the canvas |
-| `empty_fill` | A fill layer produces at least one closed outline (mark) |
-| `thin_stroke` | A stroke is at least 1 px wide with the canvas drawn at 512 px (figure) |
+| `ratio_count` | At most 3 distinct ratios across radii and widths; "R/2" and "R*2" count once. Not applied to an icon |
+| `circle_count` | At most 8 circles in a mark, 16 in a figure, 40 in an icon; arcs do not count. A mark whose fill reaches an `outline` may have 40 |
+| `off_grid` | Numeric coordinates and radii are multiples of 0.5 module (mark, icon) or 0.25 (figure); stroke widths and `dash` are exempt |
+| `angle` | Angles, including `oval.rotate`, are multiples of 180/n for n in 2, 3, 4, 5, 6, 8, 10, 12, 20, 24; `polygon.n` and `repeat.n` come from the same set |
+| `off_canvas` | Everything drawn stays inside the canvas; a stroke counts half its width beyond its geometry |
+| `empty_fill` | A fill layer produces at least one closed outline (mark, icon) |
+| `thin_stroke` | A stroke is at least 1 px wide with the canvas drawn at 512 px (figure), or at least 0.5 module wide (icon) |
+| `uneven_steps` | A polyline of 3 or more segments that rises or falls steadily along one axis has equal steps along that axis (figure, icon). A polyline with a segment that stays level on the other axis is not checked |
+| `width_count` | At most 3 distinct stroke widths in one spec (icon) |
 | `unused_shape` | Every element is reachable from a paint layer |
 | `unused_exception` | An exception that matches no violation is reported; it cannot itself be excused |
 
@@ -97,9 +105,28 @@ A mark and a figure never mix: a mark takes only `fill` layers, a figure only `s
 
 **`outline`** draws a figurative silhouette from construction circles instead of coordinates. `through` lists 2 to 64 pieces counter-clockwise, with the inside on the left. A piece is an id, or `{ "on": id, "concave": true, "corner": point }`; `on` is a circle, `tangent_circle` or `line`. A circle piece bulges outward, and `concave: true` carves inward. Each piece ends where it meets the next one, and the last meets the first. Pieces that touch are joined at the tangent point. Pieces that cross are joined at a corner, and `corner` picks which of the two intersections. An outline works where `points` does: as a mark fill, a figure stroke or erase, or in a `repeat`. The report's `geometry` lists its pieces, its corners with the signed turn in degrees (left turns positive) and its area.
 
-**`underlay`** compares a drawing with a reference image. Pass `underlay: { "path": ..., "box"?, "threshold"?, "invert"? }` to `gridsmith_render`. `path` is an absolute path to a PNG or JPEG of at most 4 MiB and 16 million pixels. The foreground is found from the alpha channel, or from luminance with an Otsu threshold (`threshold` 1 to 254 overrides it, `invert` swaps the sides). Its bounding box is fitted into `box` (modules, default the grid square) and the sheet shows it in orange behind the drawing. Every opaque pixel counts as ink, so cut a hole with `subtract` instead of painting it white.
+**`underlay`** compares a drawing with a reference image. Pass `underlay: { "path": ..., "box"?, "threshold"?, "invert"?, "fit"? }` to `gridsmith_render`. `path` is an absolute path to a PNG or JPEG of at most 4 MiB and 16 million pixels. The foreground is found from the alpha channel, or from luminance with an Otsu threshold (`threshold` 1 to 254 overrides it, `invert` swaps the sides). Its bounding box is fitted into `box` (modules, default the grid square) and the sheet shows it in orange behind the drawing. `fit` is `"shape"` (default) or `"image"`; `"image"` places the whole image in `box` instead of its foreground, which suits a PNG of a whole 24-unit canvas. Every opaque pixel counts as ink, so cut a hole with `subtract` instead of painting it white.
 
 With an underlay the report gains `match`: `iou` (1 means identical), `missing` and `excess` as shares, `offset` (drawing centre minus reference centre), `grid` (12 rows, top first: `-` missing, `+` excess, `.` fine), up to three `blobs` (kind, share of the reference area, centre, box) and `underlay` (the placement, threshold and polarity used). The `match` view is a 512 px PNG: both in dark grey, reference only in orange, drawing only in blue. Fix the largest blob or grid region and render again. Compare a figure with a line drawing, not with a filled silhouette. `gridsmith_export` does not take an underlay.
+
+## Icons
+
+`mode: "icon"` draws a 24-unit UI icon with `grid.divisions` 12 and no margin: one module is one pixel at 24 px. Coordinates keep the origin at the centre with y up and range over -12 to 12. To use them as SVG coordinates (0 to 24, y down) take `x + 12` and `12 - y`. `paint` mixes `fill` and `stroke` layers in any order, and a later layer lies on top. To fill and outline the same shape, write one layer of each. Elements that share a vertex, such as the filled dot at the end of a polyline, refer to one `point` by id. `gridsmith_guide` with `icon` returns the full reference.
+
+<p><img src="docs/gallery/line-chart-sheet.png" alt="line-chart construction sheet" width="300"> <img src="docs/gallery/line-chart-sizes.png" alt="line-chart at 24 and 16 px, enlarged 8x" width="300"></p>
+
+The `sizes` view of an icon draws the final SVG at 24 px and at 16 px on white and enlarges both 8x with nearest-neighbour sampling (336 x 192 px), so each pixel is visible. The `segments` view and `gridsmith_export` give `<name>.segments.json`: the path data of the icon, one segment per paint layer in paint order, in a 24-unit canvas with the origin at the top left and y down. Each segment has `d` (absolute `M`, `L`, `A` and `Z` commands) and either `fill` and `fillRule`, or `stroke`, `strokeWidth`, `strokeLinecap`, `strokeLinejoin` and, for a dashed stroke, `strokeDasharray`. A consumer that renders one `path` element per segment draws the same picture as the final SVG.
+
+```json
+{ "canvas": 24,
+  "segments": [
+    { "d": "M2 5L22 5L22 19L2 19Z", "fill": "#ffffff", "fillRule": "evenodd" },
+    { "d": "M4 15L8 11L12 14L16 8", "stroke": "#107c41", "strokeWidth": 1.3,
+      "strokeLinecap": "round", "strokeLinejoin": "round" }
+  ] }
+```
+
+`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs, and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
 
 ## Gallery
 
@@ -160,6 +187,18 @@ A whale silhouette from a single `outline` through seven circles on an 8-divisio
 <p><img src="docs/gallery/whale-guides.png" alt="whale with guide lines" width="300"></p>
 
 Spec: [`docs/gallery/whale.json`](docs/gallery/whale.json)
+
+### icon
+
+#### line-chart
+
+<p><img src="docs/gallery/line-chart.png" alt="line-chart" width="300"> <img src="docs/gallery/line-chart-sheet.png" alt="line-chart construction sheet" width="300"></p>
+
+A rounded `rect` plate (radius 3) is filled, then two stroke layers are drawn over it: the axes, a `polyline` with mitred joins and butt caps, and a rising zigzag through four `point` elements spaced 4 modules apart in x. The dot at the end is a filled circle of radius 1.5 centred on the last point, so the polyline and the dot share it by id.
+
+<p><img src="docs/gallery/line-chart-sizes.png" alt="line-chart pixel preview" width="300"> <img src="docs/gallery/line-chart-guides.png" alt="line-chart with guide lines" width="300"></p>
+
+Spec: [`docs/gallery/line-chart.json`](docs/gallery/line-chart.json)
 
 ### figure
 
