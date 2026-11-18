@@ -18,6 +18,14 @@ npx -y github:libraz/gridsmith init
 
 `init` を再実行しても置き換わるのは `gridsmith` のエントリーだけで、他のサーバーはそのまま残ります。削除するには `npx -y github:libraz/gridsmith uninstall` を実行します。どちらの後も MCP クライアントを再起動してください。
 
+### Claude Code のプラグインとして入れる
+
+```text
+/plugin install gridsmith --marketplace libraz/gridsmith
+```
+
+プラグインは同じサーバーを `npx` で起動します。複数の Claude Code 設定ディレクトリで共有している `settings.json` で有効にすれば、そのすべてで使えます。
+
 ### 手動で設定する
 
 Claude Code では `claude mcp add gridsmith -- npx -y github:libraz/gridsmith` を実行するか、`~/.claude.json` または `.mcp.json` に次のエントリーを書きます。

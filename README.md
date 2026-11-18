@@ -35,7 +35,13 @@ Requires Node.js 24 or later. Register the MCP server with Claude Code and/or Co
 npx -y github:libraz/gridsmith init
 ```
 
-`init` asks which configs to update and writes only the `gridsmith` entry; `uninstall` removes it. Manual setup for other clients is in [Getting started](https://github.com/libraz/gridsmith/blob/main/docs/en/getting-started.md).
+`init` asks which configs to update and writes only the `gridsmith` entry; `uninstall` removes it. In Claude Code it also installs as a plugin:
+
+```text
+/plugin install gridsmith --marketplace libraz/gridsmith
+```
+
+Manual setup for other clients is in [Getting started](https://github.com/libraz/gridsmith/blob/main/docs/en/getting-started.md).
 
 As a library:
 

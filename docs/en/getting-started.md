@@ -18,6 +18,14 @@ It asks which configs to update (comma-separated, e.g. `1,3`) and writes a `grid
 
 Re-running `init` replaces only the `gridsmith` entry; other servers are kept. `npx -y github:libraz/gridsmith uninstall` removes it again. Restart the MCP client after either.
 
+### As a Claude Code plugin
+
+```text
+/plugin install gridsmith --marketplace libraz/gridsmith
+```
+
+The plugin starts the same server through `npx`. Enabling it in a `settings.json` shared by several Claude Code config directories makes it available in all of them.
+
 ### Manual setup
 
 For Claude Code, either run `claude mcp add gridsmith -- npx -y github:libraz/gridsmith`, or add the entry to `~/.claude.json` or `.mcp.json` by hand:

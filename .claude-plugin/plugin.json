@@ -1,0 +1,19 @@
+{
+  "name": "gridsmith",
+  "version": "0.1.0",
+  "description": "Geometric SVG logo, UI icon and magic-circle generator: an MCP server that solves a JSON construction spec, lints it and renders SVG and PNG with a construction sheet.",
+  "author": {
+    "name": "libraz",
+    "email": "libraz@libraz.net"
+  },
+  "homepage": "https://github.com/libraz/gridsmith",
+  "repository": "https://github.com/libraz/gridsmith",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "svg", "logo", "icon", "geometry", "magic-circle"],
+  "mcpServers": {
+    "gridsmith": {
+      "command": "npx",
+      "args": ["-y", "github:libraz/gridsmith"]
+    }
+  }
+}

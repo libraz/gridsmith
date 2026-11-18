@@ -35,7 +35,13 @@ Node.js 24 以上が必要です。Claude Code や Codex CLI に MCP サーバ�
 npx -y github:libraz/gridsmith init
 ```
 
-`init` は更新する設定ファイルを尋ね、`gridsmith` のエントリーだけを書き込みます。`uninstall` で削除できます。他のクライアントの手動設定は [はじめに](https://github.com/libraz/gridsmith/blob/main/docs/ja/getting-started.md) にあります。
+`init` は更新する設定ファイルを尋ね、`gridsmith` のエントリーだけを書き込みます。`uninstall` で削除できます。Claude Code ではプラグインとしても入れられます。
+
+```text
+/plugin install gridsmith --marketplace libraz/gridsmith
+```
+
+他のクライアントの手動設定は [はじめに](https://github.com/libraz/gridsmith/blob/main/docs/ja/getting-started.md) にあります。
 
 ライブラリとして使う場合は次のとおりです。
 

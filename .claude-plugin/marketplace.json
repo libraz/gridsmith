@@ -1,0 +1,22 @@
+{
+  "name": "gridsmith",
+  "metadata": {
+    "description": "Geometric SVG logos, UI icons and magic-circle figures from a JSON construction spec, for Claude Code."
+  },
+  "owner": {
+    "name": "libraz",
+    "email": "libraz@libraz.net",
+    "url": "https://github.com/libraz"
+  },
+  "plugins": [
+    {
+      "name": "gridsmith",
+      "source": "./",
+      "description": "MCP server that draws logo marks, magic-circle figures and 24-unit UI icons from a JSON construction spec.",
+      "version": "0.1.0",
+      "homepage": "https://github.com/libraz/gridsmith",
+      "license": "Apache-2.0",
+      "keywords": ["mcp", "svg", "logo", "icon", "geometry", "magic-circle"]
+    }
+  ]
+}
