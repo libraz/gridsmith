@@ -15,13 +15,13 @@ import type { Evaluation, ToolName } from './shared.js';
 import {
   complain,
   evaluate,
+  GridsmithError,
   guarded,
   jsonText,
   parseArgs,
   RESPONSE_MAX_CHARS,
   rasterize,
   round4,
-  ToolFailure,
 } from './shared.js';
 
 const TOOL = 'gridsmith_import';
@@ -71,7 +71,7 @@ function tryEvaluate(tool: ToolName, raw: unknown): { ev: Evaluation } | { error
   try {
     return { ev: evaluate(tool, raw) };
   } catch (error) {
-    if (error instanceof ToolFailure) {
+    if (error instanceof GridsmithError) {
       return { error: firstLine(error.lines[0] ?? error.message) };
     }
     throw error;
@@ -159,7 +159,7 @@ function snapAtStep(tool: ToolName, converted: SpecInput, step: GridStep) {
  * @param options.snap Whether to round the converted spec; `faithful` is always measured before.
  * @param options.step The grid step to round to; ignored when `snap` is false.
  * @throws Error when the segments or their path data are malformed.
- * @throws ToolFailure when the native rasterizer is unavailable.
+ * @throws GridsmithError when the native rasterizer is unavailable.
  */
 export function importIcon(
   tool: ToolName,
@@ -332,9 +332,28 @@ function fitBody(report: ImportReport): Body {
   if (fits(noNotes)) {
     return noNotes;
   }
-  throw new ToolFailure([
+  throw new GridsmithError([
     `${TOOL}: segments: the result is too large to return (received: ${report.subpaths} subpaths; allowed: fewer segments per call)`,
   ]);
+}
+
+/**
+ * Validates the import arguments `{ segments, snap?, step? }` and runs {@link importIcon}, with
+ * malformed segments reported as a {@link GridsmithError}.
+ */
+export function runImport(tool: ToolName, args: unknown): ImportReport {
+  const parsed = parseArgs(tool, args, argsSchema);
+  try {
+    return importIcon(tool, parsed.segments, {
+      snap: parsed.snap ?? true,
+      ...(parsed.step === undefined ? {} : { step: parsed.step }),
+    });
+  } catch (error) {
+    if (error instanceof GridsmithError || !(error instanceof Error)) {
+      throw error;
+    }
+    throw new GridsmithError([`${tool}: segments: ${firstLine(error.message)}`]);
+  }
 }
 
 export function registerImport(server: McpServer): void {
@@ -345,22 +364,6 @@ export function registerImport(server: McpServer): void {
       inputSchema,
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    (args) =>
-      guarded(TOOL, async () => {
-        const parsed = parseArgs(TOOL, args, argsSchema);
-        let report: ImportReport;
-        try {
-          report = importIcon(TOOL, parsed.segments, {
-            snap: parsed.snap ?? true,
-            ...(parsed.step === undefined ? {} : { step: parsed.step }),
-          });
-        } catch (error) {
-          if (error instanceof ToolFailure || !(error instanceof Error)) {
-            throw error;
-          }
-          throw new ToolFailure([`${TOOL}: segments: ${firstLine(error.message)}`]);
-        }
-        return { content: [jsonText(fitBody(report))] };
-      }),
+    (args) => guarded(TOOL, async () => ({ content: [jsonText(fitBody(runImport(TOOL, args)))] })),
   );
 }

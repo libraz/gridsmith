@@ -177,6 +177,25 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@libraz/gridsmith@workspace:.":
+  version: 0.0.0-use.local
+  resolution: "@libraz/gridsmith@workspace:."
+  dependencies:
+    "@biomejs/biome": "npm:^2.6.8"
+    "@modelcontextprotocol/client": "npm:^2.4.0"
+    "@modelcontextprotocol/server": "npm:^2.4.0"
+    "@resvg/resvg-js": "npm:^2.6.2"
+    "@types/node": "npm:^26.6.6"
+    paper: "npm:^0.17.0"
+    typescript: "npm:^7.0.2"
+    vite: "npm:^8.3.8"
+    vitest: "npm:^5.1.0"
+    zod: "npm:^4.6.7"
+  bin:
+    gridsmith: ./dist/cli.js
+  languageName: unknown
+  linkType: soft
+
 "@modelcontextprotocol/client@npm:^2.4.0":
   version: 2.4.0
   resolution: "@modelcontextprotocol/client@npm:2.4.0"
@@ -827,25 +846,6 @@ __metadata:
   checksum: 10c0/a4e2ccd9fe7ed384ed0d466363028978c1b1537f0719db826dfa6a850abd8fc418596f14d9a9609f830ba8137df3da1acc1132a6afd635d8633fbe53530c3e6d
   languageName: node
   linkType: hard
-
-"gridsmith@workspace:.":
-  version: 0.0.0-use.local
-  resolution: "gridsmith@workspace:."
-  dependencies:
-    "@biomejs/biome": "npm:^2.6.8"
-    "@modelcontextprotocol/client": "npm:^2.4.0"
-    "@modelcontextprotocol/server": "npm:^2.4.0"
-    "@resvg/resvg-js": "npm:^2.6.2"
-    "@types/node": "npm:^26.6.6"
-    paper: "npm:^0.17.0"
-    typescript: "npm:^7.0.2"
-    vite: "npm:^8.3.8"
-    vitest: "npm:^5.1.0"
-    zod: "npm:^4.6.7"
-  bin:
-    gridsmith: ./dist/index.js
-  languageName: unknown
-  linkType: soft
 
 "isexe@npm:^2.0.0":
   version: 2.0.0

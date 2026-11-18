@@ -24,7 +24,7 @@ const { EXAMPLES } = await import('../dist/guide/examples.js');
 const { renderPreviewPng } = await import('../dist/render/png.js');
 const { renderGuidesSvg, renderSheetSvg } = await import('../dist/render/sheet.js');
 const { renderFinalSvg } = await import('../dist/render/svg.js');
-const { evaluate, ToolFailure } = await import('../dist/tools/shared.js');
+const { evaluate, GridsmithError } = await import('../dist/tools/shared.js');
 
 const isIcon = (example) => example.spec.mode === 'icon';
 
@@ -36,7 +36,7 @@ function render(example) {
   try {
     ev = evaluate(TOOL, example.spec);
   } catch (error) {
-    if (error instanceof ToolFailure) {
+    if (error instanceof GridsmithError) {
       throw new Error(error.lines.join('\n'));
     }
     throw error;

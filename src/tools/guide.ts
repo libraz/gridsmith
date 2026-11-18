@@ -6,12 +6,12 @@ import type { RuleId } from '../spec/schema.js';
 import { complain, guarded, jsonText, parseArgs, specJsonSchema } from './shared.js';
 
 const TOOL = 'gridsmith_guide';
-const TOPICS = ['overview', 'spec', 'rules', 'examples', 'icon'] as const;
-type Topic = (typeof TOPICS)[number];
+export const GUIDE_TOPICS = ['overview', 'spec', 'rules', 'examples', 'icon'] as const;
+export type GuideTopic = (typeof GUIDE_TOPICS)[number];
 
-const argsSchema = z.strictObject({
+export const guideArgsSchema = z.strictObject({
   topic: z
-    .enum(TOPICS, {
+    .enum(GUIDE_TOPICS, {
       error: complain('topic', 'one of "overview", "spec", "rules", "examples", "icon"'),
     })
     .optional(),
@@ -179,7 +179,8 @@ function renameDefs(schema: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(text) as Record<string, unknown>;
 }
 
-function topicDocument(topic: Topic): unknown {
+/** The document of one guide topic, as the gridsmith_guide tool returns it. */
+export function guideDocument(topic: GuideTopic): Record<string, unknown> {
   switch (topic) {
     case 'overview':
       return { topic, text: OVERVIEW };
@@ -223,8 +224,8 @@ export function registerGuide(server: McpServer): void {
     },
     (args) =>
       guarded(TOOL, async () => {
-        const { topic = 'overview' } = parseArgs(TOOL, args, argsSchema);
-        return { content: [jsonText(topicDocument(topic))] };
+        const { topic = 'overview' } = parseArgs(TOOL, args, guideArgsSchema);
+        return { content: [jsonText(guideDocument(topic))] };
       }),
   );
 }

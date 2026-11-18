@@ -5,7 +5,7 @@ import type { Box, Mask } from '../render/match.js';
 import { binarize, MatchError, placeReference } from '../render/match.js';
 import { decodeImage } from '../render/png.js';
 import type { ToolName } from './shared.js';
-import { complain, errorCode, rasterize, show, ToolFailure } from './shared.js';
+import { complain, errorCode, GridsmithError, rasterize, show } from './shared.js';
 
 const TOOL: ToolName = 'gridsmith_render';
 
@@ -24,10 +24,10 @@ export type UnderlayFile = {
   height: number;
 };
 
-const failure = (where: string, what: string, detail: string): ToolFailure =>
-  new ToolFailure([`${TOOL}: ${where}: ${what} (${detail})`]);
+const failure = (where: string, what: string, detail: string): GridsmithError =>
+  new GridsmithError([`${TOOL}: ${where}: ${what} (${detail})`]);
 
-const unreadable = (): ToolFailure =>
+const unreadable = (): GridsmithError =>
   failure(
     'underlay.path',
     'image dimensions cannot be read from the file header',
@@ -108,7 +108,7 @@ async function readBounded(path: string): Promise<Uint8Array> {
 /**
  * Validates the underlay file and reads its dimensions from the header, without decoding.
  *
- * @throws ToolFailure (path `underlay.path`) for anything that is not a readable PNG or JPEG within the limits.
+ * @throws GridsmithError (path `underlay.path`) for anything that is not a readable PNG or JPEG within the limits.
  */
 export async function checkUnderlayFile(path: string): Promise<UnderlayFile> {
   if (!isAbsolute(path)) {
@@ -118,7 +118,7 @@ export async function checkUnderlayFile(path: string): Promise<UnderlayFile> {
       'allowed: an absolute path such as /tmp/work/ref.png',
     );
   }
-  const unreadablePath = (error: unknown): ToolFailure =>
+  const unreadablePath = (error: unknown): GridsmithError =>
     failure(
       'underlay.path',
       `file cannot be read (received: ${show(path)}, ${errorCode(error)})`,
@@ -136,7 +136,7 @@ export async function checkUnderlayFile(path: string): Promise<UnderlayFile> {
     }
     size = info.size;
   } catch (error) {
-    throw error instanceof ToolFailure ? error : unreadablePath(error);
+    throw error instanceof GridsmithError ? error : unreadablePath(error);
   }
   if (size > UNDERLAY_MAX_BYTES) {
     throw failure(
@@ -149,7 +149,7 @@ export async function checkUnderlayFile(path: string): Promise<UnderlayFile> {
   try {
     bytes = await readBounded(path);
   } catch (error) {
-    throw error instanceof ToolFailure ? error : unreadablePath(error);
+    throw error instanceof GridsmithError ? error : unreadablePath(error);
   }
   let mime: UnderlayFile['mime'];
   let dims: [number, number];
@@ -241,7 +241,7 @@ const NO_SILHOUETTE =
 /**
  * Validates `box` against the canvas, decodes and binarizes the image and places it as the reference mask.
  *
- * @throws ToolFailure for a box out of range, an image without a silhouette or an empty placed reference.
+ * @throws GridsmithError for a box out of range, an image without a silhouette or an empty placed reference.
  */
 export function buildUnderlay(
   file: UnderlayFile,
@@ -286,7 +286,7 @@ export function buildUnderlay(
       throw error;
     }
     if (error.code === 'no_silhouette') {
-      throw new ToolFailure([`${TOOL}: ${NO_SILHOUETTE}`]);
+      throw new GridsmithError([`${TOOL}: ${NO_SILHOUETTE}`]);
     }
     throw failure(
       'underlay.box',

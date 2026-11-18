@@ -11,6 +11,7 @@ import type { Evaluation } from './shared.js';
 import {
   complain,
   evaluate,
+  GridsmithError,
   guarded,
   jsonText,
   loadSpec,
@@ -20,7 +21,6 @@ import {
   rasterize,
   round4,
   specArgSchema,
-  ToolFailure,
 } from './shared.js';
 import { buildUnderlay, checkUnderlayFile, type UnderlayFile, underlaySchema } from './underlay.js';
 
@@ -333,19 +333,19 @@ export function registerRender(server: McpServer): void {
           views = parsed.views ?? DEFAULT_VIEWS[spec.mode];
           const at = views.indexOf('sizes');
           if (spec.mode === 'figure' && at >= 0) {
-            throw new ToolFailure([
+            throw new GridsmithError([
               `${TOOL}: views[${at}]: view is not available for a figure (received: "sizes"; allowed: "sheet" or "final" when mode is "figure")`,
             ]);
           }
           const segmentsAt = views.indexOf('segments');
           if (spec.mode !== 'icon' && segmentsAt >= 0) {
-            throw new ToolFailure([
+            throw new GridsmithError([
               `${TOOL}: views[${segmentsAt}]: view is not available for ${spec.mode === 'mark' ? 'a mark' : 'a figure'} (received: "segments"; allowed: "segments" only when mode is "icon")`,
             ]);
           }
           const matchAt = views.indexOf('match');
           if (matchAt >= 0 && parsed.underlay === undefined) {
-            throw new ToolFailure([
+            throw new GridsmithError([
               `${TOOL}: views[${matchAt}]: view needs an underlay (received: "match" without underlay; allowed: "match" only together with the underlay argument)`,
             ]);
           }

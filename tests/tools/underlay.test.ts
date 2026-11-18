@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { encodeRgbaPng, encodeRgbPng } from '../../src/render/png.js';
-import { ToolFailure } from '../../src/tools/shared.js';
+import { GridsmithError } from '../../src/tools/shared.js';
 import {
   buildUnderlay,
   checkUnderlayFile,
@@ -34,15 +34,15 @@ const write = async (name: string, bytes: Uint8Array): Promise<string> => {
   return path;
 };
 
-/** Message lines of the ToolFailure thrown by `run`. */
+/** Message lines of the GridsmithError thrown by `run`. */
 async function failure(run: () => unknown): Promise<string> {
   try {
     await run();
   } catch (error) {
-    expect(error).toBeInstanceOf(ToolFailure);
-    return (error as ToolFailure).lines.join('\n');
+    expect(error).toBeInstanceOf(GridsmithError);
+    return (error as GridsmithError).lines.join('\n');
   }
-  throw new Error('expected a ToolFailure');
+  throw new Error('expected a GridsmithError');
 }
 
 /** RGB image, white with a black disc covering about a third of the side. */
@@ -473,6 +473,8 @@ describe('buildUnderlay', () => {
     const file = await fileOf('hairline.png', encodeRgbPng(side, side, rgb));
     const box = [0, 0, 1, 1];
     const text = await failure(() => buildUnderlay(file, argsOf({ path: 'x', box }), 9, 9));
-    expect(text).toMatch(/^gridsmith_render: underlay\.box: the reference is empty after placement/);
+    expect(text).toMatch(
+      /^gridsmith_render: underlay\.box: the reference is empty after placement/,
+    );
   });
 });

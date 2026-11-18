@@ -141,7 +141,7 @@ async function importCommand(file, outDir, step) {
         ...(step === undefined ? {} : { step }),
       });
     } catch (error) {
-      if (error.name === 'ToolFailure') {
+      if (error.name === 'GridsmithError') {
         throw error;
       }
       entry.skipped.push({ reason: 'invalid input' });

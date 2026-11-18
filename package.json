@@ -1,15 +1,59 @@
 {
-  "name": "gridsmith",
+  "name": "@libraz/gridsmith",
   "version": "0.1.0",
-  "private": true,
-  "description": "MCP server that draws logo marks, magic-circle figures and UI icons from geometric construction rules.",
+  "description": "Geometric SVG logo, icon and magic-circle generator: a TypeScript library and MCP server that solves a JSON construction spec, lints it and renders SVG and PNG.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "svg",
+    "logo",
+    "logo-generator",
+    "icon",
+    "svg-icons",
+    "geometry",
+    "geometric-construction",
+    "sacred-geometry",
+    "magic-circle",
+    "png",
+    "claude-code",
+    "codex"
+  ],
+  "license": "Apache-2.0",
+  "author": "libraz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/libraz/gridsmith.git"
+  },
+  "homepage": "https://github.com/libraz/gridsmith#readme",
+  "bugs": {
+    "url": "https://github.com/libraz/gridsmith/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
-  "bin": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": "./dist/cli.js",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "README_ja.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=24"
   },
   "packageManager": "yarn@4.18.1",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "biome check .",
@@ -18,7 +62,10 @@
     "typecheck": "tsc --noEmit",
     "check": "yarn lint && yarn typecheck",
     "test": "vitest run",
-    "gallery": "yarn build && node scripts/gallery.js"
+    "gallery": "yarn build && node scripts/gallery.js",
+    "start": "node dist/cli.js",
+    "prepare": "[ -d node_modules/typescript ] && tsc -p tsconfig.build.json || true",
+    "prepublishOnly": "yarn build"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.4.0",

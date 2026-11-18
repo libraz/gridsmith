@@ -12,20 +12,29 @@ import { lint } from '../rules/lint.js';
 import type { Spec } from '../spec/schema.js';
 import { specSchema } from '../spec/schema.js';
 
-export type ToolName = 'gridsmith_guide' | 'gridsmith_render' | 'gridsmith_export' | 'gridsmith_import';
+/** Prefix of every error line: an MCP tool name, or `gridsmith` for the library functions. */
+export type ToolName =
+  | 'gridsmith_guide'
+  | 'gridsmith_render'
+  | 'gridsmith_export'
+  | 'gridsmith_import'
+  | 'gridsmith';
 
 export const RESPONSE_MAX_CHARS = 20000;
 export const ERROR_MAX_CHARS = 10000;
 export const SPEC_FILE_MAX_BYTES = 256 * 1024;
 const MAX_INPUT_ERRORS = 10;
 
-/** A failure reported to the caller as an `isError` result; every line starts with the tool name. */
-export class ToolFailure extends Error {
+/**
+ * A failure caused by the caller's input. The MCP tools return it as an `isError` result; the
+ * library functions throw it. Every line starts with the tool name, or `gridsmith`.
+ */
+export class GridsmithError extends Error {
   readonly lines: readonly string[];
 
   constructor(lines: readonly string[]) {
     super(lines[0] ?? 'tool failure');
-    this.name = 'ToolFailure';
+    this.name = 'GridsmithError';
     this.lines = lines;
   }
 }
@@ -270,7 +279,7 @@ export function parseArgs<S extends z.ZodObject>(
 ): z.output<S> {
   const input = raw === undefined ? {} : raw;
   if (!isRecord(input)) {
-    throw new ToolFailure([
+    throw new GridsmithError([
       `${tool}: arguments: arguments are invalid (received: ${show(input)}; allowed: an object)`,
     ]);
   }
@@ -278,7 +287,7 @@ export function parseArgs<S extends z.ZodObject>(
   if (result.success) {
     return result.data;
   }
-  throw new ToolFailure(
+  throw new GridsmithError(
     capInputLines(issueLines(tool, [], result.error.issues, (path) => schemaKeysAt(schema, path))),
   );
 }
@@ -290,8 +299,8 @@ export const specArgSchema = z.union([z.record(z.string(), z.unknown()), z.strin
 
 export type LoadedSpec = { raw: unknown; path?: string };
 
-const failSpec = (tool: ToolName, what: string, allowed: string): ToolFailure =>
-  new ToolFailure([`${tool}: spec: ${what} (allowed: ${allowed})`]);
+const failSpec = (tool: ToolName, what: string, allowed: string): GridsmithError =>
+  new GridsmithError([`${tool}: spec: ${what} (allowed: ${allowed})`]);
 
 /** Returns the spec object, reading it from disk when `spec` is a path. */
 export async function loadSpec(tool: ToolName, spec: Json | string): Promise<LoadedSpec> {
@@ -320,7 +329,7 @@ export async function loadSpec(tool: ToolName, spec: Json | string): Promise<Loa
     }
     size = info.size;
   } catch (error) {
-    if (error instanceof ToolFailure) {
+    if (error instanceof GridsmithError) {
       throw error;
     }
     throw failSpec(
@@ -370,7 +379,7 @@ function parseSpec(tool: ToolName, raw: unknown): Spec {
   if (result.success) {
     return result.data;
   }
-  throw new ToolFailure(
+  throw new GridsmithError(
     capInputLines(issueLines(tool, ['spec'], result.error.issues, (path) => specKeysAt(raw, path))),
   );
 }
@@ -394,14 +403,14 @@ export type Evaluation = {
 /**
  * Parses, resolves, arranges and lints a raw spec. `check` runs on the parsed spec before any geometry.
  *
- * @throws ToolFailure for invalid input, unresolvable elements and internal invariant failures.
+ * @throws GridsmithError for invalid input, unresolvable elements and internal invariant failures.
  */
 export function evaluate(tool: ToolName, raw: unknown, check?: (spec: Spec) => void): Evaluation {
   const spec = parseSpec(tool, raw);
   check?.(spec);
   const resolved = resolveSpec(spec);
   if (!resolved.ok) {
-    throw new ToolFailure(resolved.errors.map((e) => resolveLine(tool, spec, e)));
+    throw new GridsmithError(resolved.errors.map((e) => resolveLine(tool, spec, e)));
   }
   const { model } = resolved;
   let fills: FillResult[];
@@ -410,7 +419,7 @@ export function evaluate(tool: ToolName, raw: unknown, check?: (spec: Spec) => v
   } catch (error) {
     if (error instanceof ArrangementInvariantError) {
       const hash = createHash('sha256').update(JSON.stringify(raw)).digest('hex').slice(0, 12);
-      throw new ToolFailure([
+      throw new GridsmithError([
         `${tool}: internal error: a fill's boundary did not close into loops (spec sha256: ${hash}). This is a bug; keep the spec so it can be reproduced.`,
       ]);
     }
@@ -435,7 +444,7 @@ export function rasterize<T>(tool: ToolName, what: string, fn: () => T): T {
   } catch (error) {
     console.error(error instanceof Error ? (error.stack ?? error.message) : error);
     const reason = error instanceof Error ? firstLine(error.message) : 'unknown error';
-    throw new ToolFailure([
+    throw new GridsmithError([
       `${tool}: could not rasterize ${what} (${reason}). @resvg/resvg-js may lack a native binary for this platform; run yarn install again on a supported platform.`,
     ]);
   }
@@ -489,7 +498,7 @@ export async function guarded(
   try {
     return await body();
   } catch (error) {
-    if (error instanceof ToolFailure) {
+    if (error instanceof GridsmithError) {
       return errorResult(error.lines);
     }
     console.error(error instanceof Error ? (error.stack ?? error.message) : error);
