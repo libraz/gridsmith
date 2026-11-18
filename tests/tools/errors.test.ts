@@ -52,6 +52,7 @@ type Geometry = {
   contacts: { kind: string }[];
 };
 type Report = {
+  summary: string;
   geometry: Geometry[];
   violations: { rule: string; target: string }[];
   exceptions_applied: unknown[];
@@ -253,11 +254,11 @@ rejectSpec(
   'spec.shapes[2].n',
 );
 rejectSpec(
-  'shapes: 65',
+  'shapes: 257',
   setAt(
     fig(),
     ['shapes'],
-    Array.from({ length: 65 }, (_, i) => circle(`c${i}`, 3)),
+    Array.from({ length: 257 }, (_, i) => circle(`c${i}`, 3)),
   ),
   'spec.shapes',
 );
@@ -1299,12 +1300,12 @@ describe('accepted edge values', () => {
     }
   });
 
-  it('accepts 64 shapes', async () => {
-    const shapes = Array.from({ length: 64 }, (_, i) => circle(`c${i}`, 3));
+  it('accepts 256 shapes', async () => {
+    const shapes = Array.from({ length: 256 }, (_, i) => circle(`c${i}`, 3));
     const report = await accepted(
       setAt(setAt(fig(), ['shapes'], shapes), ['paint'], [{ stroke: ['c0'], width: 0.125 }]),
     );
-    expect(report.geometry).toHaveLength(64);
+    expect(report.summary).toContain('with 256 shapes');
   });
 
   it('accepts 16 paint layers and 16 exceptions', async () => {

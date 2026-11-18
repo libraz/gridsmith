@@ -40,6 +40,8 @@ export const MAX_REGION_DEPTH = 8;
 export const MAX_SUPPORT_CURVES = 256;
 /** Elements a `figure` may draw after `repeat` expansion. */
 export const MAX_DRAWN_ELEMENTS = 2048;
+/** Entries in the `shapes` list. */
+export const SHAPES_MAX = 256;
 
 export type Point =
   | [number, number]
@@ -728,7 +730,7 @@ const specObject = z.strictObject({
     .max(400, { error: complain('concept', 'a string of 1 to 400 characters') })
     .refine(unitsAtMost(400), { error: complain('concept', 'a string of 1 to 400 characters') })
     .optional(),
-  shapes: listOf(shapeSchema, 'shapes', 1, 64),
+  shapes: listOf(shapeSchema, 'shapes', 1, SHAPES_MAX),
   paint: listOf(paintSchema, 'paint', 1, 16),
   exceptions: listOf(exceptionSchema, 'exceptions', 0, 16).default([]),
 });

@@ -356,9 +356,9 @@ describe('ranges', () => {
   const manyCircles = (count: number): Obj[] =>
     Array.from({ length: count }, (_, i) => circle(`c${i}`, { r: 1 }));
 
-  it('limits shapes to 64', () => {
-    expect(accepted(withShapes(manyCircles(64), { paint: [{ fill: 'c0' }] }))).toBe(true);
-    expectRejectedAt(withShapes(manyCircles(65), { paint: [{ fill: 'c0' }] }), 'shapes');
+  it('limits shapes to 256', () => {
+    expect(accepted(withShapes(manyCircles(256), { paint: [{ fill: 'c0' }] }))).toBe(true);
+    expectRejectedAt(withShapes(manyCircles(257), { paint: [{ fill: 'c0' }] }), 'shapes');
   });
 
   it('limits paint layers to 16', () => {
