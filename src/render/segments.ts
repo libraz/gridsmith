@@ -58,7 +58,7 @@ function pathWriter(half: number) {
     }
     return out.join('');
   };
-  const chain = (pieces: readonly ChainPiece[]): string => {
+  const chain = (pieces: readonly ChainPiece[], closed: boolean): string => {
     const first = pieces[0];
     if (first === undefined) {
       return '';
@@ -67,12 +67,12 @@ function pathWriter(half: number) {
     pieces.forEach((piece, i) => {
       // `Z` draws a closing straight piece.
       if (piece.kind === 'line') {
-        out.push(i === pieces.length - 1 ? '' : `L${at(piece.end)}`);
+        out.push(closed && i === pieces.length - 1 ? '' : `L${at(piece.end)}`);
       } else {
         out.push(arc(piece.circle, piece.start, piece.end, piece.ccw));
       }
     });
-    return `${out.join('')}Z`;
+    return `${out.join('')}${closed ? 'Z' : ''}`;
   };
   const open = (points: readonly Vec[], close: boolean): string =>
     points.map((p, i) => `${i === 0 ? 'M' : 'L'}${at(p)}`).join('') + (close ? 'Z' : '');
@@ -94,7 +94,7 @@ function pathWriter(half: number) {
       case 'polygon':
         return it.loops.map((loop) => open(loop, true)).join('');
       case 'chain':
-        return chain(it.pieces);
+        return chain(it.pieces, it.closed);
       case 'polyline':
         return open(it.points, false);
     }

@@ -147,6 +147,19 @@ function describeElement(el: ResolvedElement): Record<string, unknown> {
         x2: round4(el.end.x),
         y2: round4(el.end.y),
       };
+    case 'oval_arc':
+      return {
+        id: el.id,
+        type: 'arc',
+        on: el.on,
+        from: round4(el.from),
+        to: round4(el.to),
+        x1: round4(el.start.x),
+        y1: round4(el.start.y),
+        x2: round4(el.end.x),
+        y2: round4(el.end.y),
+        pieces: el.pieces.length,
+      };
     case 'line':
       return {
         id: el.id,

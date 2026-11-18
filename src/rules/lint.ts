@@ -117,7 +117,7 @@ type Finding = { target: string; message: string };
 
 const fmt = (x: number): string => String(Number(x.toPrecision(6)));
 
-const isMultiple = (value: number, unit: number, tolerance: number): boolean => {
+export const isMultiple = (value: number, unit: number, tolerance: number): boolean => {
   const k = value / unit;
   return Math.abs(k - Math.round(k)) <= tolerance;
 };
@@ -363,6 +363,11 @@ function chainReach(pieces: readonly ChainPiece[]): number {
         }
       }
     }
+  }
+  // An open run ends away from where it starts; a closed chain's last end is its first start.
+  const last = pieces[pieces.length - 1];
+  if (last !== undefined) {
+    points.push(last.end);
   }
   return Math.max(...points.map((p) => Math.max(Math.abs(p.x), Math.abs(p.y))));
 }

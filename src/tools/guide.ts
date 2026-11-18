@@ -53,7 +53,7 @@ REFERENCES
 - tangent_circle { r, to: [a, b], near } is the circle of radius r touching both a and b (circles or lines). Candidates include external and internal contact with circles and both sides of a line; the one whose centre is closest to near wins. The render report lists each contact point.
 - { half: line id, toward: point } is the side of the infinite line that contains the point. Lines are infinite in intersections, tangents and half-planes; they are drawn as segments only when stroked.
 - repeat { of: [ids], n, center?, mirror?, axis? } copies the shapes n times about center, 360/n degrees apart. mirror adds the reflection across the line at angle axis through center.
-- arc { on: circle id, from, to } runs counter-clockwise from from to to along the circle. Each end is degrees or a point on the circle, typically { intersect: [circle, other], near }: an arc between two intersection points. Stroke it or repeat it; it cannot be a region or a reference base.
+- arc { on: circle or oval id, from, to } runs counter-clockwise from from to to along the circle or oval. On a circle each end is degrees or a point on the circle, typically { intersect: [circle, other], near }: an arc between two intersection points. On an oval each end is degrees only, the direction seen from the oval's centre. Stroke it or repeat it; it cannot be a region or a reference base.
 - polygon { in: circle id, n, step?, rotate? } inscribes a regular n-gon; step 2 or more draws a star ({6/2} is a hexagram).
 
 OUTLINES (silhouettes from arcs)
@@ -113,7 +113,7 @@ CHECKING AND EXPORT
 gridsmith_render views default to sheet and sizes. sizes is a pixel preview: the final drawing at 24 and 16 px, each enlarged 8x with nearest neighbour; look for blur and merged strokes. segments returns the path segments (one per layer, absolute M L A Z in 0..24 y-down) as a JSON string. gridsmith_export writes <name>.svg, -sheet.svg, -guides.svg, .spec.json, .segments.json and PNGs -512, -48, -24, -16.
 
 IMPORTING AN EXISTING ICON
-gridsmith_import takes segments (1 to 64 of { d, fill?, stroke?, strokeWidth?, strokeLinecap?, strokeLinejoin?, strokeDasharray?, fillRule?, transform? }, 24 units, y down) and returns a spec rounded to the 0.5 grid with equal polyline steps (snap: false skips the rounding). Beziers become lines and circular arcs. status: clean (every subpath converted, no violations), violations, partial (skipped is not empty) or failed. diff is the share of pixels that differ from the original, faithful the same before rounding; both are reports, not limits. A skipped subpath with reason "mixed path" lists its lines and arcs in pieces, y up, so you can draw it by hand. snap.kept names shapes left unrounded because rounding would collapse them. Write the returned spec to a file and continue with gridsmith_render.
+gridsmith_import takes segments (1 to 64 of { d, fill?, stroke?, strokeWidth?, strokeLinecap?, strokeLinejoin?, strokeDasharray?, fillRule?, transform? }, 24 units, y down) and returns a spec rounded to the 0.5 grid with equal polyline steps (snap: false skips the rounding). Beziers become lines and circular arcs; a single elliptical arc becomes an arc on an oval. status: clean (every subpath converted, no violations), violations, partial (skipped is not empty) or failed. diff is the share of pixels that differ from the original, faithful the same before rounding; both are reports, not limits. A skipped subpath with reason "mixed path" lists its lines and arcs in pieces, y up, so you can draw it by hand. snap.kept names shapes left unrounded because rounding would collapse them. Write the returned spec to a file and continue with gridsmith_render.
 
 EXAMPLE
 Topic "examples" has "line-chart": a rounded plate, two axes, an evenly spaced trend line and an end dot.`;
@@ -124,7 +124,7 @@ const ELEMENT_NOTES: Record<string, string> = {
   tangent_circle:
     'Radius r circle touching both elements in to (circles or lines, distinct). near: Point picks the candidate whose centre is closest.',
   line: 'Infinite directed line through two distinct points, from and to. Drawn as the segment from-to.',
-  arc: 'Part of the circumference of circle on, counter-clockwise from from to to. Each end is degrees or a point on the circle (within 1e-6); the ends must differ (use circle for a full circumference). Strokeable and repeatable; not a region, base or reference.',
+  arc: 'Part of the circumference of circle or oval on, counter-clockwise from from to to. On a circle each end is degrees or a point on the circle (within 1e-6); on an oval each end is degrees only, measured from the oval centre. The ends must differ (use circle or oval for a full circumference). Strokeable and repeatable; not a region, base or reference.',
   polygon:
     'Regular n-gon inscribed in the circle in; vertex k at angle rotate + 360k/n. step >= 2 joins vertex i to i+step (a star).',
   points:

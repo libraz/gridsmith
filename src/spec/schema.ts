@@ -633,6 +633,11 @@ type KindSet = { label: string; types: readonly Shape['type'][] };
 const kindSet = (label: string, types: readonly Shape['type'][]): KindSet => ({ label, types });
 
 const CIRCLE_LIKE = kindSet('the id of a circle or tangent_circle', ['circle', 'tangent_circle']);
+const ARC_BASE = kindSet('the id of a circle, tangent_circle or oval', [
+  'circle',
+  'tangent_circle',
+  'oval',
+]);
 const CIRCLE_OR_LINE = kindSet('the id of a circle, tangent_circle or line', [
   'circle',
   'tangent_circle',
@@ -852,10 +857,18 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
         checkPoint(shape.to, at('to'), i, earlier, 0);
         break;
       case 'arc':
-        lookup(shape.on, i, at('on'), CIRCLE_LIKE, earlier);
+        lookup(shape.on, i, at('on'), ARC_BASE, earlier);
         for (const key of ['from', 'to'] as const) {
           const end = shape[key];
-          if (typeof end !== 'number') {
+          if (typeof end === 'number') {
+            continue;
+          }
+          if (byId.get(shape.on)?.shape.type === 'oval') {
+            add(
+              at(key),
+              `arc end is invalid (received: ${show(end)}; allowed: degrees when "on" names an oval)`,
+            );
+          } else {
             checkPoint(end, at(key), i, earlier, 0);
           }
         }

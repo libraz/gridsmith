@@ -1,6 +1,7 @@
 import type { FillResult } from '../geom/arrangement.js';
+import type { ChainPiece } from '../geom/chain.js';
 import type { Circle, Line, Vec } from '../geom/primitives.js';
-import { pointOnCircle } from '../geom/primitives.js';
+import { distance, pointOnCircle } from '../geom/primitives.js';
 import type { RepeatElement, ResolvedElement, ResolvedModel } from '../resolve/resolve.js';
 import type { Spec } from '../spec/schema.js';
 import { arcParts, chainPathData, finalMarkup, num } from './svg.js';
@@ -145,6 +146,8 @@ function legendRow(el: ResolvedElement): string {
     }
     case 'oval':
       return `${el.id}  oval  rx = ${tidy(el.rx)}, ry = ${tidy(el.ry)}, end ${tidy(el.end)}, side ${tidy(el.side)}`;
+    case 'oval_arc':
+      return `${el.id}  arc  on ${el.on}, ${tidy(el.from)} to ${tidy(el.to)}`;
     case 'polyline': {
       const n = el.vertices.length;
       return `${el.id}  polyline  ${n} ${n === 1 ? 'point' : 'points'}`;
@@ -317,6 +320,12 @@ function helperMarkup(
         `<path d="${d.join(' ')}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * ARC_WIDTH_FACTOR)}" stroke-linecap="round"${extra}/>`,
       ];
     }
+    case 'oval_arc': {
+      const d = chainPathData(el.pieces, (p) => ({ x: sx(f, p.x), y: sy(f, p.y) }), f.scale, false);
+      return [
+        `<path d="${d}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * ARC_WIDTH_FACTOR)}" stroke-linecap="round"${extra}/>`,
+      ];
+    }
     case 'line': {
       const seg = clipSegment(el.from, el.to, f.half);
       if (seg === null) {
@@ -389,6 +398,28 @@ function jointMarkup(
   });
 }
 
+/** Midpoint of the piece that holds half the total length of an open run. */
+function runMidpoint(pieces: readonly ChainPiece[]): Vec | null {
+  const lengthOf = (p: ChainPiece): number =>
+    p.kind === 'arc' ? p.circle.r * p.sweep : distance(p.start, p.end);
+  let rest = pieces.reduce((sum, p) => sum + lengthOf(p), 0) / 2;
+  const piece = pieces.find((p) => {
+    rest -= lengthOf(p);
+    return rest <= 0;
+  });
+  if (piece === undefined) {
+    return null;
+  }
+  if (piece.kind === 'line') {
+    return { x: (piece.start.x + piece.end.x) / 2, y: (piece.start.y + piece.end.y) / 2 };
+  }
+  const mid = piece.from + ((piece.ccw ? 1 : -1) * piece.sweep) / 2;
+  return {
+    x: piece.circle.cx + piece.circle.r * Math.cos(mid),
+    y: piece.circle.cy + piece.circle.r * Math.sin(mid),
+  };
+}
+
 /** Where an element's id tag goes, in module coordinates; `bearing` places a circle's tag on its circumference. */
 function anchorOf(el: ResolvedElement | RepeatElement, f: Frame, bearing: number): Vec | null {
   switch (el.type) {
@@ -399,6 +430,8 @@ function anchorOf(el: ResolvedElement | RepeatElement, f: Frame, bearing: number
       return pointOnCircle(el.circle, bearing);
     case 'arc':
       return pointOnCircle(el.circle, el.from + el.sweep / 2);
+    case 'oval_arc':
+      return runMidpoint(el.pieces);
     case 'line': {
       const seg = clipSegment(el.from, el.to, f.half);
       return seg === null ? null : seg[1];

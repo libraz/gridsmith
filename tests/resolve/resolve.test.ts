@@ -2011,3 +2011,119 @@ describe('icon mode resolution', () => {
     expect([plain?.cap, plain?.join, plain?.dash]).toEqual(['round', 'round', null]);
   });
 });
+
+describe('arc on an oval', () => {
+  // rx 3, ry 2: chord length d = sqrt(13), joints at ((d + 1) / 2, +-(d - 1) / 2).
+  const d = Math.sqrt(13);
+  const jx = (d + 1) / 2;
+  const jy = (d - 1) / 2;
+  const oval = { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 };
+  const arcOn = (from: number, to: number): ShapeInput => ({
+    id: 'a',
+    type: 'arc',
+    on: 'o',
+    from,
+    to,
+  });
+  const icon = (shapes: ShapeInput[], paint: unknown[]): SpecInput =>
+    build(shapes, paint, { mode: 'icon', grid: { divisions: 12 } });
+  const stroked = (shapes: ShapeInput[], ids: string[]): SpecInput =>
+    icon(shapes, [{ stroke: ids, width: 1 }]);
+  const near = (p: Vec | undefined, x: number, y: number): void => {
+    expect(distance(p ?? { x: Number.NaN, y: 0 }, { x, y })).toBeLessThanOrEqual(1e-9);
+  };
+
+  it('ends on the oval where the rays at from and to leave it', () => {
+    const m = model(stroked([oval, arcOn(0, 180)], ['a']));
+    const el = get(m, 'a', 'oval_arc');
+    expect(el.on).toBe('o');
+    expect(el.pieces).toHaveLength(3);
+    near(el.start, 3, 0);
+    near(el.end, -3, 0);
+    near(el.pieces[0]?.end, jx, jy);
+    near(el.pieces[1]?.end, -jx, jy);
+    expect([el.from, el.to]).toEqual([0, 180]);
+  });
+
+  it('reports the directions of the ends in [0, 360)', () => {
+    const el = get(model(stroked([oval, arcOn(-90, 450)], ['a'])), 'a', 'oval_arc');
+    near(el.start, 0, -2);
+    near(el.end, 0, 2);
+    expect(el.from).toBeCloseTo(270, 9);
+    expect(el.to).toBeCloseTo(90, 9);
+  });
+
+  it('fails when the ends are a whole number of turns apart', () => {
+    const [error] = failure(stroked([oval, arcOn(0, 720)], ['a']));
+    expect(error?.id).toBe('a');
+    expect(error?.message).toContain('arc ends coincide');
+    expect(error?.message).toContain('Use the oval itself.');
+    expect(failure(stroked([oval, arcOn(720, 0)], ['a']))[0]?.message).toContain(
+      'arc ends coincide',
+    );
+  });
+
+  it('draws as an open chain item while the oval stays closed', () => {
+    const m = model(stroked([oval, arcOn(0, 90)], ['o', 'a']));
+    const items = m.strokes[0]?.items ?? [];
+    expect(items.map((i) => (i.kind === 'chain' ? [i.id, i.closed] : null))).toEqual([
+      ['o', true],
+      ['a', false],
+    ]);
+  });
+
+  it('turns with a rotating repeat', () => {
+    const m = model(
+      stroked([oval, arcOn(0, 90), { id: 'rep', type: 'repeat', of: ['a'], n: 2 }], ['rep']),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copyCount).toBe(2);
+    const el = rep.copies[0]?.element;
+    if (el?.type !== 'oval_arc') {
+      throw new Error('expected an oval_arc copy');
+    }
+    near(el.center, 0, 0);
+    near(el.start, -3, 0);
+    near(el.end, 0, -2);
+    near(el.pieces[0]?.end, -jx, -jy);
+    expect([el.from, el.to]).toEqual([180, 270]);
+    const item = m.strokes[0]?.items[1];
+    expect(item?.kind === 'chain' && item.closed).toBe(false);
+  });
+
+  it('swaps the ends and reverses the pieces under a mirroring repeat', () => {
+    const m = model(
+      stroked(
+        [oval, arcOn(0, 90), { id: 'rep', type: 'repeat', of: ['a'], n: 1, mirror: true }],
+        ['rep'],
+      ),
+    );
+    const el = get(m, 'rep', 'repeat').copies[0]?.element;
+    if (el?.type !== 'oval_arc') {
+      throw new Error('expected an oval_arc copy');
+    }
+    expect(el.pieces).toHaveLength(2);
+    near(el.start, 0, 2);
+    near(el.end, -3, 0);
+    near(el.pieces[0]?.end, -jx, jy);
+    expect(el.pieces.every((p) => p.kind === 'arc' && p.ccw)).toBe(true);
+    expect([el.from, el.to]).toEqual([90, 180]);
+  });
+
+  it('drops a mirrored copy only when it lands on the original', () => {
+    const m = model(
+      stroked(
+        [oval, arcOn(0, 180), { id: 'rep', type: 'repeat', of: ['a'], n: 1, mirror: true }],
+        ['rep'],
+      ),
+    );
+    expect(get(m, 'rep', 'repeat').copyCount).toBe(1);
+    const half = model(
+      stroked(
+        [oval, arcOn(90, 270), { id: 'rep', type: 'repeat', of: ['a'], n: 1, mirror: true }],
+        ['rep'],
+      ),
+    );
+    expect(get(half, 'rep', 'repeat').copyCount).toBe(2);
+  });
+});

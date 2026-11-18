@@ -1776,3 +1776,33 @@ describe('icon mode errors', () => {
     expect(await readdir(workDir)).toEqual([]);
   });
 });
+
+describe('arc on an oval', () => {
+  const spec = (from: number, to: number): Obj => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes: [
+      { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 },
+      { id: 'a', type: 'arc', on: 'o', from, to },
+    ],
+    paint: [{ stroke: ['a'], width: 1, color: '#107c41' }],
+  });
+
+  it('rejects ends a whole number of turns apart', async () => {
+    await rejected(
+      'gridsmith_render',
+      renderArgs(spec(0, 720)),
+      'spec.shapes[1]',
+      '"a"',
+      'arc ends coincide (received: from 0 and to 720',
+      'allowed:',
+      'Use the oval itself.',
+    );
+  });
+
+  it('accepts a run just short of a whole turn', async () => {
+    const report = await accepted(spec(0, 359));
+    expect(report.geometry.find((g) => g.id === 'a')).toBeDefined();
+  });
+});

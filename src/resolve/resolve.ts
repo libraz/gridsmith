@@ -1,5 +1,11 @@
 import type { ChainInput, ChainJoint, ChainPiece } from '../geom/chain.js';
-import { buildChain, ChainError, sameChain, transformChain } from '../geom/chain.js';
+import {
+  buildChain,
+  ChainError,
+  sameChain,
+  transformChain,
+  transformPieces,
+} from '../geom/chain.js';
 import {
   intersectCircleCircle,
   intersectCircleLine,
@@ -20,7 +26,7 @@ import {
   sub,
 } from '../geom/primitives.js';
 import type { RegionNode } from '../geom/region.js';
-import { ovalChain, ovalRadii, rectChain } from '../geom/shapes.js';
+import { ovalArc, ovalChain, ovalRadii, rectChain } from '../geom/shapes.js';
 import type { TangentCandidate, TangentTarget } from '../geom/tangent.js';
 import { tangentCandidates } from '../geom/tangent.js';
 import { evaluateLengthExpression, parseLengthExpression } from '../spec/length.js';
@@ -67,6 +73,19 @@ export type ArcGeometry = {
 };
 export type ResolvedArc = { type: 'arc'; id: string } & ArcGeometry;
 
+/** An open run of an oval's pieces, counter-clockwise from `start` to `end`; `from` and `to` are degrees in [0, 360) seen from `center`. */
+export type ResolvedOvalArc = {
+  type: 'oval_arc';
+  id: string;
+  on: string;
+  center: Vec;
+  pieces: ChainPiece[];
+  from: number;
+  to: number;
+  start: Vec;
+  end: Vec;
+};
+
 /** A closed outline: pieces run counter-clockwise, `joints[k]` joins `pieces[k]` to the next piece. */
 export type ResolvedOutline = {
   type: 'outline';
@@ -111,6 +130,7 @@ export type RepeatElement =
   | ResolvedCircle
   | ResolvedLine
   | ResolvedArc
+  | ResolvedOvalArc
   | ResolvedPolygon
   | ResolvedPoints
   | ResolvedOutline
@@ -134,6 +154,7 @@ export type ResolvedElement =
   | ResolvedTangentCircle
   | ResolvedLine
   | ResolvedArc
+  | ResolvedOvalArc
   | ResolvedPolygon
   | ResolvedPoints
   | ResolvedOutline
@@ -149,7 +170,7 @@ export type StrokeGeometry =
   | { kind: 'segment'; from: Vec; to: Vec }
   | ({ kind: 'arc' } & ArcGeometry)
   | { kind: 'polygon'; loops: Vec[][] }
-  | { kind: 'chain'; pieces: ChainPiece[] }
+  | { kind: 'chain'; pieces: ChainPiece[]; closed: boolean }
   | { kind: 'polyline'; points: Vec[] };
 
 /** A closed shape an erase layer hides the earlier layers inside of. */
@@ -212,6 +233,7 @@ type Drawable =
   | ResolvedTangentCircle
   | ResolvedLine
   | ResolvedArc
+  | ResolvedOvalArc
   | ResolvedPolygon
   | ResolvedPoints
   | ResolvedOutline
@@ -285,6 +307,18 @@ const arcBetween = (circle: Circle, start: Vec, end: Vec): ArcGeometry => {
   return { circle, from, to, sweep: sweep === 0 ? 360 : sweep, start, end };
 };
 
+const samePieces = (a: readonly ChainPiece[], b: readonly ChainPiece[]): boolean =>
+  a.length === b.length &&
+  a.every((p, k) => {
+    const q = b[k] as ChainPiece;
+    if (distance(p.start, q.start) > SNAP || distance(p.end, q.end) > SNAP) {
+      return false;
+    }
+    return p.kind === 'arc' && q.kind === 'arc'
+      ? p.ccw === q.ccw && sameCircle(p.circle, q.circle)
+      : p.kind === q.kind;
+  });
+
 const sameVertices = (a: Vec[], b: Vec[]): boolean =>
   a.length === b.length &&
   a.every((p) => b.some((q) => distance(p, q) <= SNAP)) &&
@@ -303,6 +337,9 @@ const sameGeometry = (a: RepeatElement, b: RepeatElement): boolean => {
       distance(a.start, b.start) <= SNAP &&
       distance(a.end, b.end) <= SNAP
     );
+  }
+  if (a.type === 'oval_arc' && b.type === 'oval_arc') {
+    return samePieces(a.pieces, b.pieces);
   }
   if ((a.type === 'polygon' || a.type === 'points') && a.type === b.type) {
     return sameVertices(a.vertices, b.vertices);
@@ -339,6 +376,21 @@ const mapElement = (el: RepeatElement, f: (p: Vec) => Vec, mirrored: boolean): R
         type: 'arc',
         id: el.id,
         ...arcBetween({ cx: c.x, cy: c.y, r: el.circle.r }, start, end),
+      };
+    }
+    case 'oval_arc': {
+      const center = f(el.center);
+      const pieces = transformPieces(el.pieces, f, mirrored);
+      const start = (pieces[0] as ChainPiece).start;
+      const end = (pieces[pieces.length - 1] as ChainPiece).end;
+      return {
+        ...el,
+        center,
+        pieces,
+        start,
+        end,
+        from: degreesOf(center, start),
+        to: degreesOf(center, end),
       };
     }
     case 'polygon':
@@ -644,7 +696,49 @@ export function resolveSpec(spec: Spec): ResolveResult {
     );
   };
 
-  const resolveArc = (shape: Extract<Shape, { type: 'arc' }>): ResolvedArc => {
+  const resolveOvalArc = (
+    shape: Extract<Shape, { type: 'arc' }>,
+    oval: ResolvedOval,
+  ): ResolvedOvalArc => {
+    const { from, to } = shape;
+    if (typeof from !== 'number' || typeof to !== 'number') {
+      throw new Failure(
+        `arc end is a point (received: ${typeof from === 'number' ? 'to' : 'from'} as a point on "${shape.on}"; allowed: degrees when "on" names an oval)`,
+      );
+    }
+    const turn = normalizeDegrees(to - from);
+    if (turn < 1e-9) {
+      throw new Failure(
+        `arc ends coincide (received: from ${fmt(from)} and to ${fmt(to)}, a whole number of turns apart; allowed: ends that differ by other than a multiple of 360). Use the oval itself.`,
+      );
+    }
+    const rad = (deg: number): number => (deg * Math.PI) / 180;
+    const pieces = ovalArc(oval.center, oval.rx, oval.ry, rad(oval.rotate), rad(from), rad(to));
+    const start = (pieces[0] as ChainPiece).start;
+    const end = (pieces[pieces.length - 1] as ChainPiece).end;
+    if (distance(start, end) <= SNAP) {
+      throw new Failure(
+        `arc ends coincide (received: from ${fmtPoint(start)} and to ${fmtPoint(end)}, distance ${fmt(distance(start, end))}; allowed: distance above ${SNAP}). Use the oval itself.`,
+      );
+    }
+    return {
+      type: 'oval_arc',
+      id: shape.id,
+      on: shape.on,
+      center: oval.center,
+      pieces,
+      from: degreesOf(oval.center, start),
+      to: degreesOf(oval.center, end),
+      start,
+      end,
+    };
+  };
+
+  const resolveArc = (shape: Extract<Shape, { type: 'arc' }>): ResolvedArc | ResolvedOvalArc => {
+    const base = lookup(shape.on);
+    if (base.type === 'oval') {
+      return resolveOvalArc(shape, base);
+    }
     const circle = circleOf(shape.on);
     const endOf = (value: Point | number, label: string): Vec => {
       if (typeof value === 'number') {
@@ -828,6 +922,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
         case 'circle':
         case 'line':
         case 'arc':
+        case 'oval_arc':
         case 'polygon':
         case 'points':
         case 'outline':
@@ -1017,6 +1112,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
         return { kind: 'chain', pieces: el.pieces, source };
       case 'line':
       case 'arc':
+      case 'oval_arc':
       case 'polyline':
         return null;
     }
@@ -1048,7 +1144,9 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'outline':
       case 'rect':
       case 'oval':
-        return { id: el.id, copy, via, kind: 'chain', pieces: el.pieces };
+        return { id: el.id, copy, via, kind: 'chain', pieces: el.pieces, closed: true };
+      case 'oval_arc':
+        return { id: el.id, copy, via, kind: 'chain', pieces: el.pieces, closed: false };
       case 'polyline':
         return { id: el.id, copy, via, kind: 'polyline', points: el.vertices };
     }
@@ -1068,6 +1166,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
         return { kind: 'chain', pieces: el.pieces };
       case 'line':
       case 'arc':
+      case 'oval_arc':
       case 'polyline':
         throw new Failure(
           `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points, outline, rect, oval or repeat of those)`,

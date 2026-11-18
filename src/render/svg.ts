@@ -73,7 +73,7 @@ export function loopsToPathData(loops: readonly Loop[]): string {
 }
 
 /**
- * One closed path through chain pieces: `M`, `L`, `A` (at most 120 degrees each) and `Z`.
+ * One path through chain pieces: `M`, `L`, `A` (at most 120 degrees each) and, when `closed`, `Z`.
  * `place` maps a module point to output coordinates (default: y flipped) and `scale` is the
  * module-to-output length factor, so the construction sheet reuses it in its own frame.
  */
@@ -81,6 +81,7 @@ export function chainPathData(
   pieces: readonly ChainPiece[],
   place: (p: Vec) => Vec = (p) => ({ x: p.x, y: -p.y }),
   scale = 1,
+  closed = true,
 ): string {
   const first = pieces[0];
   if (first === undefined) {
@@ -103,7 +104,9 @@ export function chainPathData(
       out.push(`A ${num(r * scale)} ${num(r * scale)} 0 0 ${sweep} ${at(end)}`);
     }
   }
-  out.push('Z');
+  if (closed) {
+    out.push('Z');
+  }
   return out.join(' ');
 }
 
@@ -133,7 +136,7 @@ function strokeItemMarkup(item: StrokeItem, layer: ResolvedStroke): string[] {
     case 'polygon':
       return item.loops.map((loop) => `<polygon points="${loop.map(pt).join(' ')}" ${style}/>`);
     case 'chain':
-      return [`<path d="${chainPathData(item.pieces)}" ${style}/>`];
+      return [`<path d="${chainPathData(item.pieces, undefined, 1, item.closed)}" ${style}/>`];
     case 'polyline':
       return [`<polyline points="${item.points.map(pt).join(' ')}" ${style}/>`];
   }

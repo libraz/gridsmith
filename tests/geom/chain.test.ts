@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
 import type { Chain, ChainInput, ChainSupport } from '../../src/geom/chain.js';
-import { buildChain, ChainError, sameChain, transformChain } from '../../src/geom/chain.js';
+import {
+  buildChain,
+  ChainError,
+  sameChain,
+  transformChain,
+  transformPieces,
+} from '../../src/geom/chain.js';
 import type { Circle, Vec } from '../../src/geom/primitives.js';
 import {
   centerOf,
@@ -11,6 +17,7 @@ import {
   rotateAbout,
 } from '../../src/geom/primitives.js';
 import type { RegionNode } from '../../src/geom/region.js';
+import { ovalArc } from '../../src/geom/shapes.js';
 
 const circle = (cx: number, cy: number, r: number): ChainSupport => ({
   kind: 'circle',
@@ -418,5 +425,45 @@ describe('transformChain and sameChain', () => {
     expect(sameChain(lens, nudge(5e-8))).toBe(true);
     expect(sameChain(lens, nudge(1e-6))).toBe(false);
     expect(sameChain(lens, buildChain(filletInput))).toBe(false);
+  });
+});
+
+describe('arc on an oval', () => {
+  const ORIGIN = { x: 0, y: 0 };
+  const center = { x: 1, y: 0 };
+  // Upper half of a 3 by 2 oval about (1, 0): right end arc half, side arc, left end arc half.
+  const upper = ovalArc(center, 3, 2, 0, 0, Math.PI);
+
+  it('a mirror reverses the order and travel of open pieces, so the ends stay joined', () => {
+    // The oval is symmetric about x = 1, so the mirrored upper half is the upper half again.
+    const across = transformPieces(upper, (p) => mirrorAcross(p, center, 90), true);
+    expect(across).toHaveLength(3);
+    across.forEach((p, i) => {
+      const o = upper[i];
+      expect(distance(p.start, o?.start ?? ORIGIN)).toBeLessThan(1e-12);
+      expect(distance(p.end, o?.end ?? ORIGIN)).toBeLessThan(1e-12);
+      if (p.kind === 'arc' && o?.kind === 'arc') {
+        expect(p.ccw).toBe(true);
+        expect(p.circle.r).toBeCloseTo(o.circle.r, 12);
+        expect(p.sweep).toBeCloseTo(o.sweep, 12);
+      }
+    });
+    // Mirroring in the x axis turns the upper half into the lower half, run from (-2, 0) to (4, 0).
+    const lower = transformPieces(upper, (p) => mirrorAcross(p, ORIGIN, 0), true);
+    expect(distance(lower[0]?.start ?? center, { x: -2, y: 0 })).toBeLessThan(1e-12);
+    expect(distance(lower[2]?.end ?? center, { x: 4, y: 0 })).toBeLessThan(1e-12);
+    lower.forEach((p, i) => {
+      expect(p.start.y).toBeLessThanOrEqual(1e-12);
+      const next = lower[i + 1];
+      if (next !== undefined) {
+        expect(distance(p.end, next.start)).toBeLessThan(1e-12);
+      }
+    });
+  });
+
+  it('a direct move keeps the order and shifts every piece', () => {
+    const turned = transformPieces(upper, (p) => rotateAbout(p, center, 90), false);
+    expect(distance(turned[0]?.start ?? ORIGIN, { x: 1, y: 3 })).toBeLessThan(1e-12);
+    expect(distance(turned[2]?.end ?? ORIGIN, { x: 1, y: -3 })).toBeLessThan(1e-12);
   });
 });

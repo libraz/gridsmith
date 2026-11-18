@@ -180,6 +180,88 @@ export function ovalChain(center: Vec, rx: number, ry: number, rotate: number): 
   );
 }
 
+const TWO_PI = 2 * Math.PI;
+
+type OvalHit = { index: number; point: Vec; offset: number };
+
+/** Where the ray from `center` at `angle` leaves each arc piece, using the farther circle root. */
+function ovalHits(pieces: readonly ChainPiece[], center: Vec, angle: number): OvalHit[] {
+  const d = { x: Math.cos(angle), y: Math.sin(angle) };
+  const hits: OvalHit[] = [];
+  pieces.forEach((piece, index) => {
+    if (piece.kind !== 'arc') {
+      return;
+    }
+    const { cx, cy, r } = piece.circle;
+    const w = { x: center.x - cx, y: center.y - cy };
+    const b = w.x * d.x + w.y * d.y;
+    const disc = b * b - (w.x * w.x + w.y * w.y - r * r);
+    if (disc < 0) {
+      return;
+    }
+    const t = -b + Math.sqrt(disc);
+    if (t <= 0) {
+      return;
+    }
+    const point = { x: center.x + t * d.x, y: center.y + t * d.y };
+    const raw = Math.atan2(point.y - cy, point.x - cx) - piece.from;
+    const o = ((raw % TWO_PI) + TWO_PI) % TWO_PI;
+    const tol = SNAP / r;
+    if (o > piece.sweep + tol && o < TWO_PI - tol) {
+      return;
+    }
+    hits.push({ index, point, offset: o >= TWO_PI - tol ? 0 : Math.min(o, piece.sweep) });
+  });
+  return hits;
+}
+
+/**
+ * Pieces of the four-arc oval (see `ovalChain`) from the point seen from the centre at angle
+ * `from` to the point seen at angle `to`, counter-clockwise; angles in radians from +x.
+ * A direction through a joint starts on the next piece and ends on the previous one; pieces no
+ * longer than `SNAP` are dropped. `from` and `to` must not differ by a multiple of a full turn.
+ */
+export function ovalArc(
+  center: Vec,
+  rx: number,
+  ry: number,
+  rotate: number,
+  from: number,
+  to: number,
+): ChainPiece[] {
+  const base = ovalChain(center, rx, ry, rotate).pieces;
+  const first = ovalHits(base, center, from);
+  const last = ovalHits(base, center, to);
+  const s = first.find((h) => distance(h.point, (base[h.index] as ChainPiece).end) > SNAP);
+  const e = last.find((h) => distance(h.point, (base[h.index] as ChainPiece).start) > SNAP);
+  const a = s ?? first[0];
+  const b = e ?? last[0];
+  if (a === undefined || b === undefined) {
+    throw new Error('ovalArc: the direction does not meet the oval');
+  }
+  const out: ChainPiece[] = [];
+  const part = (k: number, p: Vec, q: Vec, sweep: number): void => {
+    const piece = base[k] as ChainPiece;
+    if (piece.kind === 'arc' && distance(p, q) > SNAP) {
+      out.push(arc(piece.circle, p, q, sweep));
+    }
+  };
+  const sweepOf = (k: number): number => {
+    const piece = base[k] as ChainPiece;
+    return piece.kind === 'arc' ? piece.sweep : 0;
+  };
+  if (a.index === b.index && b.offset > a.offset) {
+    part(a.index, a.point, b.point, b.offset - a.offset);
+    return out;
+  }
+  part(a.index, a.point, (base[a.index] as ChainPiece).end, sweepOf(a.index) - a.offset);
+  for (let k = (a.index + 1) % 4; k !== b.index; k = (k + 1) % 4) {
+    out.push(base[k] as ChainPiece);
+  }
+  part(b.index, (base[b.index] as ChainPiece).start, b.point, b.offset);
+  return out;
+}
+
 /** Distance from a point to the arc of `circle` between polar angles `lo` and `hi`. */
 function arcDistance(p: Vec, c: Vec, r: number, lo: number, hi: number): number {
   const t = Math.atan2(p.y - c.y, p.x - c.x);

@@ -64,7 +64,7 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 | `circle` | `center` (default [0, 0]) and `r` |
 | `tangent_circle` | The circle of radius `r` touching both elements in `to` (circles or lines); `near` picks among the candidates |
 | `line` | Infinite line through `from` and `to`; drawn as that segment when stroked |
-| `arc` | Part of circle `on`, counter-clockwise from `from` to `to` (degrees or points on the circle) |
+| `arc` | Part of circle or oval `on`, counter-clockwise from `from` to `to` (degrees or points on a circle; degrees only on an oval) |
 | `polygon` | Regular `n`-gon inscribed in circle `in`; `step` of 2 or more gives a star; `rotate` in degrees |
 | `points` | Closed polygon through listed points |
 | `outline` | One closed edge cut from circles and lines declared earlier, joined by tangency or at chosen corners; see below |
@@ -126,7 +126,7 @@ The `sizes` view of an icon draws the final SVG at 24 px and at 16 px on white a
   ] }
 ```
 
-`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs, and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
+`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs (a single elliptical arc becomes an arc on an oval), and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
 
 ## Gallery
 

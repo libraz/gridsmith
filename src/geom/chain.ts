@@ -186,13 +186,22 @@ export function buildChain(input: readonly ChainInput[]): Chain {
  */
 export function transformChain(chain: Chain, map: (v: Vec) => Vec, mirrored: boolean): Chain {
   const n = chain.pieces.length;
-  const moved = chain.pieces.map((p) => movePiece(p, map));
-  const pieces = mirrored ? moved.reverse().map(reversePiece) : moved;
+  const pieces = transformPieces(chain.pieces, map, mirrored);
   // Under a mirror, new joint i sits where old joint n - 2 - i was.
   const kinds = chain.joints.map((j, i) =>
     mirrored ? item(chain.joints, n - 2 - i).kind : j.kind,
   );
   return { pieces, joints: jointsOf(pieces, kinds), area: areaOf(pieces) };
+}
+
+/** Move pieces by a point map; a mirroring map reverses the order and each piece's travel. */
+export function transformPieces(
+  pieces: readonly ChainPiece[],
+  map: (v: Vec) => Vec,
+  mirrored: boolean,
+): ChainPiece[] {
+  const moved = pieces.map((p) => movePiece(p, map));
+  return mirrored ? moved.reverse().map(reversePiece) : moved;
 }
 
 /** Same pieces up to a cyclic shift: supports, ends and arc direction agree within SNAP. */

@@ -687,3 +687,35 @@ describe('icon sheet', () => {
     expect(png.png.length).toBeGreaterThan(0);
   });
 });
+
+describe('arc on an oval', () => {
+  const oval = { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 };
+  const iconWith = (shapes: unknown[]) => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes,
+    paint: [{ stroke: ['o'], width: 1, color: '#107c41' }],
+  });
+  const arcInput = iconWith([oval, { id: 'a', type: 'arc', on: 'o', from: 0, to: 180 }]);
+
+  it('lists a legend row with the oval and the end directions', () => {
+    expect(panelLines(sheetOf(arcInput).svg)).toContain('a  arc  on o, 0 to 180');
+  });
+
+  it('draws one open heavy path for the run', () => {
+    const g = sheetOf(arcInput).svg.match(/<g data-id="a">.*?<\/g>/s)?.[0] ?? '';
+    expect(g.match(/<path /g)).toHaveLength(1);
+    expect(g).toContain('stroke-linecap="round"');
+    expect(g).not.toContain('Z');
+  });
+
+  it('puts the tag at the middle of the run, where a point at the top of the oval would sit', () => {
+    const run = tagPositions(sheetOf(arcInput).svg).find((t) => t.id === 'a');
+    const pin = tagPositions(
+      sheetOf(iconWith([oval, { id: 'a', type: 'point', at: [0, 2] }])).svg,
+    ).find((t) => t.id === 'a');
+    expect(run).toBeDefined();
+    expect([run?.x, run?.y]).toEqual([pin?.x, pin?.y]);
+  });
+});

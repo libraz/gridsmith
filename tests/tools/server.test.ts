@@ -1167,3 +1167,44 @@ describe('icon mode through the tools', () => {
     }
   });
 });
+
+describe('arc on an oval', () => {
+  const spec = {
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes: [
+      { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 },
+      { id: 'a', type: 'arc', on: 'o', from: 0, to: 90 },
+    ],
+    paint: [{ stroke: ['a'], width: 1, color: '#107c41' }],
+  };
+
+  it('reports the oval it lies on, the end points and the piece count', async () => {
+    const result = await call('gridsmith_render', { spec, views: ['svg'] });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const report = jsonOf(result) as { geometry: Record<string, unknown>[] };
+    expect(report.geometry.find((g) => g.id === 'a')).toEqual({
+      id: 'a',
+      type: 'arc',
+      on: 'o',
+      from: 0,
+      to: 90,
+      x1: 3,
+      y1: 0,
+      x2: 0,
+      y2: 2,
+      pieces: 2,
+    });
+  });
+
+  it('exports the open path without a closing Z', async () => {
+    const result = await call('gridsmith_export', { spec, dir: workDir, name: 'run' });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const segments = JSON.parse(await readFile(join(workDir, 'run.segments.json'), 'utf8')) as {
+      segments: { d: string }[];
+    };
+    expect(segments.segments[0]?.d.startsWith('M15 12A')).toBe(true);
+    expect(segments.segments[0]?.d).not.toContain('Z');
+  });
+});

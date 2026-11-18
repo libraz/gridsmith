@@ -974,6 +974,75 @@ describe('arc shapes', () => {
   });
 });
 
+describe('arc on an oval', () => {
+  const oval = { id: 'o', type: 'oval', center: [0, 0], rx: 6, ry: 4 };
+  const onOval = (extra: Obj = {}): Obj => arcOf({ on: 'o', ...extra });
+  const iconArc = (shapes: Obj[], paint: Obj[] = [{ stroke: ['arc'], width: 1 }]): Obj => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes,
+    paint,
+  });
+  const messages = (input: unknown): string[] => {
+    const result = specSchema.safeParse(input);
+    return result.success ? [] : result.error.issues.map((i) => i.message);
+  };
+
+  it('accepts degree ends', () => {
+    expect(accepted(iconArc([oval, onOval({ from: 45, to: 315 })]))).toBe(true);
+    expect(accepted(iconArc([oval, onOval({ from: -3600, to: 3600 })]))).toBe(true);
+    expectRejectedAt(iconArc([oval, onOval({ from: 3601 })]), 'shapes.1.from');
+  });
+
+  it('rejects a point end and names degrees', () => {
+    for (const end of [[4, 0], 'o', { on: 'o', angle: 90 }]) {
+      for (const key of ['from', 'to']) {
+        const input = iconArc([oval, onOval({ [key]: end })]);
+        expectRejectedAt(input, `shapes.1.${key}`);
+        expect(messages(input)[0]).toContain('allowed: degrees when "on" names an oval)');
+      }
+    }
+  });
+
+  it('rejects an on that is not a circle, tangent_circle or oval and lists the oval', () => {
+    const rect = {
+      id: 'r',
+      type: 'rect',
+      corners: [
+        [-3, -3],
+        [3, 3],
+      ],
+    };
+    const input = iconArc([rect, onOval({ on: 'r' })]);
+    expectRejectedAt(input, 'shapes.1.on');
+    expect(messages(input)[0]).toContain('allowed: the id of a circle, tangent_circle or oval)');
+  });
+
+  it('requires the oval to be declared earlier', () => {
+    expectRejectedAt(iconArc([onOval(), oval]), 'shapes.0.on');
+  });
+
+  it('can be stroked and repeated but not used as a region or erased', () => {
+    const repeated = [
+      oval,
+      onOval({ id: 'piece' }),
+      { id: 'ring', type: 'repeat', of: ['piece'], n: 4 },
+    ];
+    expect(accepted(iconArc([oval, onOval()]))).toBe(true);
+    expect(accepted(iconArc(repeated, [{ stroke: ['ring'], width: 1 }]))).toBe(true);
+    expectRejectedAt(iconArc([oval, onOval()], [{ fill: 'arc' }]), 'paint.0.fill');
+    expectRejectedAt(iconArc(repeated, [{ fill: 'ring' }]), 'paint.0.fill');
+    expectRejectedAt(
+      figureSpec({
+        shapes: [oval, onOval()],
+        paint: [{ stroke: ['o'], width: 0.125 }, { erase: ['arc'] }],
+      }),
+      'paint.1.erase.0',
+    );
+  });
+});
+
 describe('erase layers', () => {
   const scene = [
     circle('a'),

@@ -1324,3 +1324,36 @@ describe('icon mode rules', () => {
     });
   });
 });
+
+describe('arc on an oval', () => {
+  const oval = (rx = 3, ry = 2): Json => ({ id: 'o', type: 'oval', center: [0, 0], rx, ry });
+  const arcOn = (from: number, to: number): Json => ({ id: 'a', type: 'arc', on: 'o', from, to });
+  const strokes = (ids: string[], width = 1): Json[] => [iconStroke(ids, width)];
+
+  it('does not leave the oval or the arc unused', () => {
+    const input = icon([oval(), arcOn(0, 180)], strokes(['a']));
+    expect(has(input, 'unused_shape')).toBe(false);
+    const spare = icon([oval(), arcOn(0, 180), { ...oval(), id: 'spare' }], strokes(['a']));
+    expect(run(spare).violations.filter((v) => v.rule === 'unused_shape')).toEqual([
+      expect.objectContaining({ target: 'spare' }),
+    ]);
+  });
+
+  it('accepts 45 and 315 degrees and rejects 48.3', () => {
+    expect(has(icon([oval(), arcOn(45, 315)], strokes(['a'])), 'angle')).toBe(false);
+    const bad = run(icon([oval(), arcOn(48.3, 315)], strokes(['a']))).violations.filter(
+      (v) => v.rule === 'angle',
+    );
+    expect(bad).toHaveLength(1);
+    expect(bad[0]?.target).toBe('a');
+    expect(bad[0]?.message).toContain('from 48.3');
+  });
+
+  it('counts the last end of an open run toward off_canvas', () => {
+    // 11 by 6 oval, run from 200 to 350 degrees: its end lies about 10.57 right of the centre,
+    // beyond every joint and axis extreme the run passes, so half a width of 3 pushes it past 12.
+    const wide = (width: number) => icon([oval(11, 6), arcOn(200, 350)], strokes(['a'], width));
+    expect(has(wide(3), 'off_canvas', 'a')).toBe(true);
+    expect(has(wide(2.8), 'off_canvas')).toBe(false);
+  });
+});

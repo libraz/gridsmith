@@ -201,3 +201,47 @@ describe('icon drawing', () => {
     expect(() => renderSegments(model, fills)).toThrow(Error);
   });
 });
+
+describe('arc on an oval', () => {
+  // rx 3, ry 2: chord length d = sqrt(13); end radius d (d - 1) / 6, side radius d (d + 1) / 4.
+  const d = Math.sqrt(13);
+  const endR = (d * (d - 1)) / 6;
+  const sideR = (d * (d + 1)) / 4;
+  const jx = (d + 1) / 2;
+  const jy = (d - 1) / 2;
+  const f = (x: number): string => String(Number(x.toFixed(4)));
+  const oval = { id: 'o', type: 'oval', center: [0, 0], rx: 3, ry: 2 };
+
+  it('writes the upper half as an open path of three arcs', () => {
+    const set = segmentsOf(
+      icon(
+        [oval, { id: 'a', type: 'arc', on: 'o', from: 0, to: 180 }],
+        [{ stroke: ['a'], width: 1, color: '#107c41' }],
+      ),
+    );
+    const expected = [
+      'M15 12',
+      `A${f(endR)} ${f(endR)} 0 0 0 ${f(12 + jx)} ${f(12 - jy)}`,
+      `A${f(sideR)} ${f(sideR)} 0 0 0 ${f(12 - jx)} ${f(12 - jy)}`,
+      `A${f(endR)} ${f(endR)} 0 0 0 9 12`,
+    ].join('');
+    expect(set.segments[0]).toMatchObject({ d: expected, stroke: '#107c41' });
+  });
+
+  it('closes the oval and leaves an arc on it open', () => {
+    const set = segmentsOf(
+      icon(
+        [oval, { id: 'a', type: 'arc', on: 'o', from: 90, to: 270 }],
+        [
+          { stroke: ['o'], width: 1, color: '#107c41' },
+          { stroke: ['a'], width: 1, color: '#107c41' },
+        ],
+      ),
+    );
+    const [closed, open] = set.segments.map((s) => ('d' in s ? s.d : ''));
+    expect(closed?.endsWith('Z')).toBe(true);
+    expect(open?.startsWith('M12 10')).toBe(true);
+    expect(open?.endsWith('Z')).toBe(false);
+    expect(open?.match(/A/g)).toHaveLength(3);
+  });
+});
