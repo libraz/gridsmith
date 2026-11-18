@@ -148,7 +148,11 @@ async function importCommand(file, outDir) {
     entry.status = result.status;
     bump(report.status, result.status);
     for (const s of result.skipped) {
-      entry.skipped.push(s.pieces ? { reason: s.reason, pieces: s.pieces } : { reason: s.reason });
+      entry.skipped.push({
+        reason: s.reason,
+        ...(s.detail === undefined ? {} : { detail: s.detail }),
+        ...(s.pieces ? { pieces: s.pieces } : {}),
+      });
       bump(report.skipped, s.reason);
     }
     for (const n of result.notes) {

@@ -39,7 +39,8 @@ type Arc = {
   /** Fitted to a Bezier curve rather than read from an arc command. */
   fitted?: boolean;
 };
-type Piece = Line | Arc;
+/** A line or circular/elliptical arc of a subpath, y up. */
+export type Piece = Line | Arc;
 
 /** Distance at which two vertices are the same point. */
 const SAME_POINT = 1e-4;

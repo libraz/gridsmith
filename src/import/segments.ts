@@ -4,12 +4,13 @@
  * Path data is read with the full SVG grammar, transforms are baked into the points, and each
  * subpath becomes one element (line, polyline, points, rect, circle, oval, arc) or a skip with a
  * reason. Coordinates map as x = x' - 12, y = 12 - y' and are rounded to 4 decimals without any
- * snapping to the grid. The arc-centre math lives here so this layer reads only `spec` types.
+ * snapping to the grid. The arc-centre math lives here; this layer reads `spec` types and `geom`.
  * Bezier curves are fitted with lines and circular arcs (`fit.ts`); a fitted arc is never
  * recognised as part of a rect, and is part of a circle only when the whole closed subpath is.
  */
 
-import type { Region, SpecInput } from '../spec/schema.js';
+import { type Region, SHAPES_MAX, type SpecInput } from '../spec/schema.js';
+import { outlinesOf } from './outline.js';
 import { apply, parsePath, parseTransform, type Vec } from './path.js';
 import {
   buildPieces,
@@ -50,6 +51,8 @@ export type ImportSkip = {
   segment: number;
   subpath: number;
   reason: string;
+  /** Why a filled ring of lines and arcs could not become an outline. */
+  detail?: string;
   pieces?: ImportPiece[];
 };
 
@@ -76,7 +79,7 @@ export type ImportResult = {
 
 type PaintInput = SpecInput['paint'][number];
 
-const MAX_SHAPES = 64;
+const MAX_SHAPES = SHAPES_MAX;
 const MAX_LAYERS = 16;
 const MAX_OPERANDS = 16;
 const MAX_D = 4096;
@@ -107,11 +110,36 @@ const unionOf = (items: Region[]): Region => {
   return unionOf(groups);
 };
 
-/** Even-odd nesting as subtract trees; containment is tested on each leaf's first vertex. */
-function evenOddRegion(leaves: readonly { id: string; poly: Vec[] }[]): Region {
+type Leaf = { id: string; poly: Vec[] };
+
+const BOUNDARY = 1e-6;
+
+/** Whether `p` lies within `BOUNDARY` of an edge of `poly`. */
+function onBoundary(p: Vec, poly: readonly Vec[]): boolean {
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j] as Vec;
+    const b = poly[i] as Vec;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    const t =
+      len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+    if (Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)) <= BOUNDARY) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Containers and innermost parent of each leaf. Leaf j sits in leaf i when it has at least one
+ * vertex off i's boundary and every such vertex is inside i.
+ */
+function nesting(leaves: readonly Leaf[]): { containers: number[][]; parent: number[] } {
   const holds = (i: number, j: number): boolean => {
-    const probe = leaves[j]?.poly[0];
-    return probe !== undefined && inside(probe, leaves[i]?.poly ?? []);
+    const outer = leaves[i]?.poly ?? [];
+    const free = (leaves[j]?.poly ?? []).filter((v) => !onBoundary(v, outer));
+    return free.length > 0 && free.every((v) => inside(v, outer));
   };
   // Mutual containment (coincident outlines) keeps the earlier leaf outside.
   const contains = (i: number, j: number): boolean =>
@@ -124,17 +152,61 @@ function evenOddRegion(leaves: readonly { id: string; poly: Vec[] }[]): Region {
       -1,
     ),
   );
-  const region = (node: number): Region => {
-    const id = leaves[node]?.id ?? '';
-    const children = parent.flatMap((p, k) => (p === node ? [region(k)] : []));
-    if (children.length === 0) {
-      return id;
-    }
-    return {
-      subtract: children.length < MAX_OPERANDS ? [id, ...children] : [id, unionOf(children)],
-    };
-  };
+  return { containers, parent };
+}
+
+const subtractOf = (id: string, children: Region[]): Region =>
+  children.length === 0
+    ? id
+    : { subtract: children.length < MAX_OPERANDS ? [id, ...children] : [id, unionOf(children)] };
+
+/** Even-odd nesting as subtract trees. */
+function evenOddRegion(leaves: readonly Leaf[]): Region {
+  const { parent } = nesting(leaves);
+  const region = (node: number): Region =>
+    subtractOf(
+      leaves[node]?.id ?? '',
+      parent.flatMap((p, k) => (p === node ? [region(k)] : [])),
+    );
   return unionOf(parent.flatMap((p, k) => (p < 0 ? [region(k)] : [])));
+}
+
+/** Signed area of a y-up polygon: positive when counter-clockwise. */
+function signedArea(poly: readonly Vec[]): number {
+  let sum = 0;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j] as Vec;
+    const b = poly[i] as Vec;
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return sum;
+}
+
+/** Nonzero fill: leaves with a non-zero winding number are filled, the rest are holes. */
+function nonZeroRegion(leaves: readonly Leaf[]): Region {
+  const { containers, parent } = nesting(leaves);
+  const sign = leaves.map((l) => (signedArea(l.poly) < 0 ? -1 : 1));
+  const filled = leaves.map(
+    (_, j) =>
+      (sign[j] ?? 0) + (containers[j] ?? []).reduce((sum, i) => sum + (sign[i] ?? 0), 0) !== 0,
+  );
+  const isRoot = (k: number): boolean => filled[k] === true && !filled[parent[k] ?? -1];
+  const holes = new Map<number, Region[]>();
+  leaves.forEach((leaf, h) => {
+    if (filled[h]) {
+      return;
+    }
+    let k = parent[h] ?? -1;
+    while (k >= 0 && filled[k] && !isRoot(k)) {
+      k = parent[k] ?? -1;
+    }
+    if (k >= 0 && filled[k]) {
+      holes.set(k, [...(holes.get(k) ?? []), leaf.id]);
+    }
+  });
+  return unionOf(
+    leaves.flatMap((leaf, k) => (isRoot(k) ? [subtractOf(leaf.id, holes.get(k) ?? [])] : [])),
+  );
 }
 
 /** Lower-case `#rrggbb`, `null` for no paint, or `undefined` for an unsupported colour. */
@@ -315,7 +387,18 @@ export function importSegments(segments: unknown): ImportResult {
         dotIds.push(`${id}d`);
         continue;
       }
-      const fill = fillColor === null ? null : closedShape(ring, id);
+      let fill: Converted | string | null = fillColor === null ? null : closedShape(ring, id);
+      let outlineDetail: string | undefined;
+      let outlineLeaves: { id: string; poly: Vec[] }[] | undefined;
+      if (fill === 'mixed path') {
+        const made = outlinesOf(ring, id);
+        if ('shapes' in made) {
+          fill = { shapes: made.shapes, ids: made.outlines.map((o) => o.id), area: true };
+          outlineLeaves = made.outlines;
+        } else {
+          outlineDetail = made.detail;
+        }
+      }
       let stroke: Converted | string | null = null;
       if (strokeColor !== null) {
         if (closed) {
@@ -335,7 +418,13 @@ export function importSegments(segments: unknown): ImportResult {
         const reason = typeof fill === 'string' ? fill : (stroke as string);
         if (reason === 'mixed path') {
           const drawn = (fillColor === null ? pieces : ring).map(importPiece);
-          skipped.push({ segment: i, subpath: sub.index, reason, pieces: drawn });
+          skipped.push({
+            segment: i,
+            subpath: sub.index,
+            reason,
+            ...(outlineDetail === undefined ? {} : { detail: outlineDetail }),
+            pieces: drawn,
+          });
         } else {
           skip(reason);
         }
@@ -354,7 +443,7 @@ export function importSegments(segments: unknown): ImportResult {
         } else if (stroke === null) {
           shapes.push(...fill.shapes);
         }
-        fillLeaves.push({ id: fillId, poly: polygonOf(ring) });
+        fillLeaves.push(...(outlineLeaves ?? [{ id: fillId, poly: polygonOf(ring) }]));
       }
       const note = (fill ?? stroke)?.note;
       if (note !== undefined) {
@@ -364,9 +453,7 @@ export function importSegments(segments: unknown): ImportResult {
 
     if (fillColor !== null && fillLeaves.length > 0) {
       const region =
-        seg.fillRule === 'evenodd'
-          ? evenOddRegion(fillLeaves)
-          : unionOf(fillLeaves.map((l) => l.id));
+        seg.fillRule === 'evenodd' ? evenOddRegion(fillLeaves) : nonZeroRegion(fillLeaves);
       paint.push({ fill: region, color: fillColor });
     }
     if (strokeColor !== null && strokeIds.length > 0) {

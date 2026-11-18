@@ -98,3 +98,14 @@ describe('arc on an oval', () => {
     expect(share(arc)).toBeLessThanOrEqual(0.02);
   });
 });
+
+describe('filled outlines', () => {
+  const FAN: ImportSegment[] = [{ d: 'M12 12L12 3.2A8.8 8.8 0 0 1 20.8 12z', fill: '#1f1f1f' }];
+
+  it('resolves an imported fan and redraws it as the original', () => {
+    const { spec, skipped } = importSegments(FAN);
+    expect(skipped).toEqual([]);
+    expect(spec?.shapes.some((s) => s.type === 'outline')).toBe(true);
+    expect(share(FAN)).toBeLessThanOrEqual(0.01);
+  });
+});

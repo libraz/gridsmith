@@ -26,8 +26,9 @@ const trend = (d: string) => ({
 });
 const evenTrend = trend('M5 16l4-4 4 3 4-6 4 2');
 const unevenTrend = trend('M3.3 17l3.1-4.6 4.2 3.2 2.5-5.4 7.3-1.3');
-// A filled shape bounded by a line and a bulging curve is neither a circle nor a rounded rect.
-const bulge = { d: 'M4 4H20V12Q12 20 4 12Z', fill: '#0f6cbd' };
+// A filled shape bounded by lines and an elliptical arc has no outline of lines and circles.
+const bulge = { d: 'M4 4H20V12A8 4 0 0 1 4 12Z', fill: '#0f6cbd' };
+const fan = { d: 'M12 12L12 3.2A8.8 8.8 0 0 1 20.8 12z', fill: '#0f6cbd' };
 
 const rules = (report: { violations: { rule: string }[] }): string[] =>
   report.violations.map((v) => v.rule);
@@ -68,9 +69,10 @@ describe('importIcon', () => {
     expect(report.skipped).toHaveLength(1);
     const [skip] = report.skipped;
     expect(skip?.reason).toBe('mixed path');
+    expect(skip?.detail).toBe('ellipse');
     expect(Array.isArray(skip?.pieces)).toBe(true);
     expect(skip?.pieces?.some((p) => 'line' in p)).toBe(true);
-    expect(skip?.pieces?.some((p) => 'arc' in p)).toBe(true);
+    expect(skip?.pieces?.some((p) => 'ellipse' in p)).toBe(true);
     expect(report.subpaths).toBe(2);
   });
 
@@ -219,5 +221,32 @@ describe('gridsmith_import', () => {
     for (const skip of body.skipped) {
       expect(skip.pieces).toBeUndefined();
     }
+  });
+});
+
+describe('filled outlines', () => {
+  it('reports a filled fan without a skip and with a faithful spec', async () => {
+    const report = importIcon(TOOL, [fan], { snap: false });
+    expect(report.skipped).toEqual([]);
+    expect(report.spec?.shapes.some((s) => s.type === 'outline')).toBe(true);
+    expect(report.faithful).not.toBeNull();
+    expect(report.status).not.toBe('partial');
+    expect(report.status).not.toBe('failed');
+  });
+
+  it('passes the detail of a refused ring through the tool', async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer();
+    await server.connect(serverTransport);
+    const client = new Client({ name: 'gridsmith-test', version: '0.0.0' });
+    await client.connect(clientTransport);
+    const result = (await client.callTool({
+      name: TOOL,
+      arguments: { segments: [plate, bulge] },
+    })) as ToolResult;
+    const body = JSON.parse(result.content[0]?.text ?? '');
+    expect(body.skipped[0]).toMatchObject({ reason: 'mixed path', detail: 'ellipse' });
+    await client.close();
+    await server.close();
   });
 });

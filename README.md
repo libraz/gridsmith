@@ -56,7 +56,7 @@ A spec has `version` (1), `mode`, `grid`, `shapes`, `paint`, and optionally `con
 
 **Grid and coordinates.** `grid.divisions` is 4, 6 or 8 (12 for an icon) and sets R, the radius of the unit circle in modules. `grid.margin` is 0 to 4 modules (default 1; an icon takes only 0, its default), so the canvas is a square of half side R + margin. The origin is the canvas centre, x points right and y up. Angles are degrees counter-clockwise from +x.
 
-**Elements** (`shapes`, at most 64; each refers only to earlier ones).
+**Elements** (`shapes`, at most 256; each refers only to earlier ones).
 
 | Kind | Meaning |
 |---|---|
@@ -126,7 +126,7 @@ The `sizes` view of an icon draws the final SVG at 24 px and at 16 px on white a
   ] }
 ```
 
-`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs (a single elliptical arc becomes an arc on an oval), and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
+`gridsmith_import` takes segments of this shape from an existing icon and returns a spec. Curves become lines and circular arcs (a single elliptical arc becomes an arc on an oval), a filled closed path of lines and circular arcs becomes an `outline` with its support circles and lines, and the spec is rounded to the 0.5 grid with equal polyline steps (`snap: false` skips the rounding). `status` is `clean`, `violations`, `partial` (some subpaths were skipped; a skipped path of mixed lines and arcs lists them in `pieces`, with `detail` when it could not become an outline) or `failed`. `diff` is the share of pixels that differ from the original; `faithful` is the same share before rounding.
 
 ## Gallery
 
