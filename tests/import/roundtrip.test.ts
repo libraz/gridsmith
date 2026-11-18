@@ -90,3 +90,11 @@ describe('import round trip', () => {
     expect(share(WITH_CURVES)).toBeLessThanOrEqual(0.02);
   });
 });
+
+describe('arc on an oval', () => {
+  it('redraws a lone elliptical arc as the original', () => {
+    const arc = [stroke('M7.3 19.07A2.24 2.8 0 1 1 7.3 15.33', '#1f1f1f', 1)];
+    expect(importSegments(arc).spec?.shapes.map((s) => s.type)).toEqual(['oval', 'arc']);
+    expect(share(arc)).toBeLessThanOrEqual(0.02);
+  });
+});

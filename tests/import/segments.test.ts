@@ -345,8 +345,9 @@ describe('importSegments conversion table', () => {
   });
 
   it('skips the other arc subpaths as mixed path', () => {
-    // Part of an ellipse.
-    expect(skipsOf([stroked('M7.3 19.07A2.24 2.8 0 1 1 7.3 15.33')])).toEqual(['mixed path']);
+    // Part of a narrow ellipse with butt caps.
+    const part = 'M7.3 19.07A1 5 0 1 1 7.3 15.33';
+    expect(skipsOf([stroked(part, { strokeLinecap: 'butt' })])).toEqual(['mixed path']);
     // A closed ring with butt caps.
     const ring = 'M6 8H14A4 4 0 0 1 14 16H6Z';
     expect(skipsOf([stroked(ring, { strokeLinecap: 'butt' })])).toEqual(['mixed path']);
@@ -355,6 +356,34 @@ describe('importSegments conversion table', () => {
     expect(skipsOf([stroked(mix, { strokeLinecap: 'butt' })])).toEqual(['mixed path']);
     expect(skipsOf([stroked(mix, { strokeDasharray: '1 1' })])).toEqual(['mixed path']);
     expect(skipsOf([stroked(mix, { fill: '#ffffff' })])).toEqual(['mixed path']);
+  });
+
+  it('fits an elliptical arc joined to a line with circular arcs', () => {
+    const result = convert([stroked('M2 12h4A3 2.4 0 0 1 10 8')]);
+    expect(result.skipped).toEqual([]);
+    const shapes = result.spec?.shapes ?? [];
+    expect(shapes.some((s) => s.type === 'oval')).toBe(false);
+    expect(shapes[0]).toMatchObject({ type: 'line', from: [-10, 0], to: [-6, 0] });
+    const note = result.notes.find((n) => n.note === 'curve fit');
+    expect(note).toBeDefined();
+    expect(note?.deviation).toBeLessThanOrEqual(0.1);
+    // The arcs run counter-clockwise, against the path: its end begins the last arc.
+    const arcs = shapes.filter((s) => s.type === 'arc');
+    const last = arcs[arcs.length - 1];
+    const circle = shapes.find((s) => s.id === last?.on);
+    if (last === undefined || circle?.type !== 'circle') {
+      throw new Error('missing arc');
+    }
+    const a = ((last.from as number) * Math.PI) / 180;
+    const [cx, cy] = circle.center as [number, number];
+    const r = circle.r as number;
+    expect(Math.hypot(cx + r * Math.cos(a) + 2, cy + r * Math.sin(a) - 4)).toBeLessThan(0.01);
+  });
+
+  it('keeps a filled ellipse outline as a draft', () => {
+    const result = convert([filled('M2 12A6 4 0 0 1 14 12z')]);
+    expect(result.skipped.map((s) => s.reason)).toEqual(['mixed path']);
+    expect(result.skipped[0]?.pieces?.some((p) => 'ellipse' in p)).toBe(true);
   });
 
   it('lists the parts of a mixed path in path order, arcs counter-clockwise', () => {
@@ -411,9 +440,17 @@ describe('importSegments conversion table', () => {
         ],
       },
     ]);
-    // A quarter of a 6 x 4 ellipse, run clockwise from the left end to the top.
-    expect(convert([stroked('M6 12A6 4 0 0 1 12 8')]).skipped[0]?.pieces).toEqual([
+    // A quarter of a 6 x 4 ellipse, run clockwise from the left end to the top, then a line.
+    expect(
+      convert([stroked('M6 12A6 4 0 0 1 12 8h2', { strokeLinecap: 'butt' })]).skipped[0]?.pieces,
+    ).toEqual([
       { ellipse: { center: [0, 0], rx: 6, ry: 4, rotate: 0, from: 90, to: 180 } },
+      {
+        line: [
+          [0, 4],
+          [2, 4],
+        ],
+      },
     ]);
   });
 
@@ -782,5 +819,47 @@ describe('segmentsToSvg', () => {
         '<path d="M1 1h2" fill="none"/>' +
         '</svg>',
     );
+  });
+});
+
+describe('arc on an oval', () => {
+  const part = 'M7.3 19.07A2.24 2.8 0 1 1 7.3 15.33';
+
+  it('turns a lone elliptical arc into an oval and an arc on it', () => {
+    const result = convert([stroked(part)]);
+    expect(result.skipped).toEqual([]);
+    expect(result.spec?.shapes).toEqual([
+      { id: 's0_0c', type: 'oval', center: [-6.3672, -5.2], rx: 2.24, ry: 2.8, rotate: 0 },
+      { id: 's0_0', type: 'arc', on: 's0_0c', from: 48.2812, to: 311.7188 },
+    ]);
+    expect(result.spec?.paint).toEqual([{ stroke: ['s0_0'], ...roundStroke }]);
+  });
+
+  it('measures the ends from the centre, not from the parameter', () => {
+    // The ends sit at x = -4.7, 1.6672 right of the centre and 1.87 above or below it.
+    const shapes = shapesOf([stroked(part)]) ?? [];
+    const arc = shapes.find((s) => s.type === 'arc');
+    expect(arc?.from).toBeCloseTo((Math.atan2(1.87, 1.6672) * 180) / Math.PI, 3);
+    expect(arc?.to).toBeCloseTo(360 - (arc?.from as number), 3);
+  });
+
+  it('takes the arc from the end to the start when the path runs counter-clockwise', () => {
+    const shapes = shapesOf([stroked('M7.3 15.33A2.24 2.8 0 1 0 7.3 19.07')]) ?? [];
+    expect(shapes[1]).toMatchObject({ type: 'arc', from: 48.2812, to: 311.7188 });
+  });
+
+  it('folds a rotated ellipse into (-90, 90]', () => {
+    const shapes = shapesOf([stroked('M4 12A4 2 120 0 1 12 12')]) ?? [];
+    expect(shapes[0]).toMatchObject({ type: 'oval', rotate: 60 });
+  });
+
+  it('keeps nearly round and elongated arcs on the circular fit', () => {
+    for (const d of ['M7.3 19.07A2.8 2.77 0 1 1 7.3 15.33', 'M7.3 19.07A1 5 0 1 1 7.3 15.33']) {
+      const result = convert([stroked(d)]);
+      const shapes = result.spec?.shapes ?? [];
+      expect(shapes.some((s) => s.type === 'oval')).toBe(false);
+      expect(shapes.some((s) => s.type === 'arc')).toBe(true);
+      expect(result.notes.some((n) => n.note === 'curve fit')).toBe(true);
+    }
   });
 });
