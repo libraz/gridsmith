@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
+import { renderPreviewPng } from '../../src/render/png.js';
 import { renderGuidesSvg, renderSheetSvg } from '../../src/render/sheet.js';
 import { resolveSpec } from '../../src/resolve/resolve.js';
 import type { Spec, SpecInput } from '../../src/spec/schema.js';
@@ -585,5 +586,104 @@ describe('construction sheet underlay image', () => {
 
   it('is absent from the guides view', () => {
     expect(guidesOf(markInput)).not.toContain('<image');
+  });
+});
+
+describe('icon sheet', () => {
+  const iconInput = {
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    concept: 'A plate, an oval and a rising line.',
+    shapes: [
+      {
+        id: 'plate',
+        type: 'rect',
+        corners: [
+          [-10, -8],
+          [10, 6],
+        ],
+        r: 2,
+      },
+      { id: 'egg', type: 'oval', center: [0, -2], rx: 6, ry: 4 },
+      {
+        id: 'trend',
+        type: 'polyline',
+        through: [
+          [-8, -6],
+          [-4, -2],
+          [0, -4],
+          [4, 2],
+          [8, 4],
+        ],
+      },
+    ],
+    paint: [
+      { fill: 'plate', color: '#f3f2f1' },
+      { stroke: ['egg'], width: 1, color: '#8a8f98' },
+      { stroke: ['trend'], width: 1.5, color: '#107c41' },
+    ],
+  };
+
+  const sheet = sheetOf(iconInput);
+  const group = (svg: string, id: string): string =>
+    svg.match(new RegExp(`<g data-id="${id}">.*?</g>`, 's'))?.[0] ?? '';
+  const count = (s: string, re: RegExp): number => [...s.matchAll(re)].length;
+
+  it('draws a rect outline and the centres of its corner arcs', () => {
+    const g = group(sheet.svg, 'plate');
+    expect(count(g, /<path /g)).toBe(1);
+    expect(count(g, /<circle /g)).toBe(4);
+  });
+
+  it('draws the four construction circles and four joints of an oval', () => {
+    const g = group(sheet.svg, 'egg');
+    expect(count(g, /<circle [^>]*fill="none"/g)).toBe(4);
+    expect(count(g, /<circle [^>]*fill="#2a6fb0"\/>/g)).toBe(4);
+  });
+
+  it('marks every vertex of a polyline', () => {
+    const g = group(sheet.svg, 'trend');
+    expect(count(g, /<polyline /g)).toBe(1);
+    expect(count(g, /<circle /g)).toBe(5);
+  });
+
+  it('lists legend rows for the new elements', () => {
+    const lines = panelLines(sheet.svg);
+    expect(lines).toContain('plate  rect  20 × 14, r = 2');
+    expect(
+      lines.some((l) =>
+        /^egg {2}oval {2}rx = 6, ry = 4, end \d+(\.\d+)?, side \d+(\.\d+)?$/.test(l),
+      ),
+    ).toBe(true);
+    expect(lines).toContain('trend  polyline  5 points');
+  });
+
+  it('places the icon around the centre at reduced opacity, in colour', () => {
+    expect(sheet.svg).toContain('<g opacity="0.35">\n<g transform="translate(-12 -12)">\n<path');
+    expect(sheet.svg).toContain('fill="#f3f2f1"');
+    expect(sheet.svg).toContain('stroke="#107c41"');
+  });
+
+  it('translates the icon in the guides and keeps the grid at integer lines', () => {
+    const { model, fills } = (() => {
+      const res = resolveSpec(specSchema.parse(iconInput as SpecInput));
+      if (!res.ok) {
+        throw new Error('resolve failed');
+      }
+      return { model: res.model, fills: res.model.fills.map((f) => arrange(f.region)) };
+    })();
+    expect(renderGuidesSvg(model, fills)).toContain('<g transform="translate(-12 -12)">');
+    expect(count(sheet.svg, /<line x1="0" y1="[^"]*" x2="1000"/g)).toBe(25);
+  });
+
+  it('renders to PNG without error', () => {
+    const png = renderPreviewPng('sheet', {
+      final: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>',
+      guides: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>',
+      sheet: sheet,
+    });
+    expect(png.width).toBeGreaterThan(0);
+    expect(png.png.length).toBeGreaterThan(0);
   });
 });

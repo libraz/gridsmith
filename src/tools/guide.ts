@@ -6,12 +6,14 @@ import type { RuleId } from '../spec/schema.js';
 import { complain, guarded, jsonText, parseArgs, specJsonSchema } from './shared.js';
 
 const TOOL = 'gridsmith_guide';
-const TOPICS = ['overview', 'spec', 'rules', 'examples'] as const;
+const TOPICS = ['overview', 'spec', 'rules', 'examples', 'icon'] as const;
 type Topic = (typeof TOPICS)[number];
 
 const argsSchema = z.strictObject({
   topic: z
-    .enum(TOPICS, { error: complain('topic', 'one of "overview", "spec", "rules", "examples"') })
+    .enum(TOPICS, {
+      error: complain('topic', 'one of "overview", "spec", "rules", "examples", "icon"'),
+    })
     .optional(),
 });
 
@@ -20,13 +22,13 @@ const inputSchema = z.looseObject({
     .unknown()
     .optional()
     .describe(
-      'One of "overview" (default; coordinates, modes, workflow), "spec" (full JSON Schema of a spec), "rules" (every lint rule with its thresholds), "examples" (complete specs that pass every rule).',
+      'One of "overview" (default; coordinates, modes, workflow), "spec" (full JSON Schema of a spec), "rules" (every lint rule with its thresholds), "examples" (complete specs that pass every rule), "icon" (drawing a 24-unit UI icon).',
     ),
 });
 
 const DESCRIPTION =
   'Documentation for the gridsmith drawing spec. Start with topic "overview", a short cheat sheet. ' +
-  'Use "spec" for the exact JSON Schema, "rules" for the rule table, and "examples" for complete specs to copy from.';
+  'Use "spec" for the exact JSON Schema, "rules" for the rule table, "examples" for complete specs to copy from, and "icon" before drawing a UI icon.';
 
 const OVERVIEW = `gridsmith draws logo marks and magic-circle figures from a JSON construction spec. You declare circles, lines and polygons; the server solves the geometry, checks the rules and renders the drawing and a construction sheet.
 
@@ -39,6 +41,7 @@ MODES (one per spec)
 - mark: filled shapes only. paint = [{ fill: Region, color? }]. A Region is an id (disc, polygon, points, outline, repeat of those), { half, toward }, or { union | intersect | subtract: [Region, ...] }. At most 8 circles (40 when a painted outline exists). Keep it legible at 64, 32 and 16 px.
 - figure: line drawing only. paint = [{ stroke: [ids], width, color? }, { erase: [ids] }]. Circles draw as circumferences, lines as segments, arcs as partial circumferences, polygons as outlines, a repeat as every copy. At most 16 circles; arcs do not count. Helper circles that nothing strokes are fine when a stroked shape refers to them.
 - erase layer (figure only, never first): hides every earlier layer inside the listed circles, polygons or points (or repeats of those), leaving the background transparent. Later layers draw on top. Use it for medallions that cut the bands behind them.
+- "icon": a 24-unit UI icon (grid.divisions 12) that mixes fill and stroke layers; read topic "icon" before writing one.
 
 ELEMENTS (shapes[]; ids are lowercase, unique, not "spec")
 point, circle, tangent_circle, line, arc, polygon, points, outline, repeat. Topic "spec" has the exact schema.
@@ -80,7 +83,40 @@ WORKFLOW
 2. Call gridsmith_render with spec set to that path. Read geometry (resolved centres, radii, tangent points), violations and hints in the JSON, and look at the images. A mark returns the sheet and 64/32/16 px sizes; a figure returns the sheet and the final drawing. Other views: guides (final drawing with every construction element over it), match (with underlay), and svg, sheet_svg, guides_svg (SVG markup as text).
 3. Edit the file and render again. Resolve errors list every failing element at once, root causes first.
 4. When violations is empty (exportable is true), call gridsmith_export with dir (absolute), name and the same spec path. Existing files are never replaced unless overwrite is true.
-An inline spec object also works; a path avoids resending it.`;
+An inline spec object also works; a path avoids resending it.
+To start an icon from existing SVG path data, call gridsmith_import (topic "icon").`;
+
+const ICON = `ICON MODE: a 24-unit UI icon that mixes fill and stroke layers.
+
+COORDINATES
+Origin at the icon centre, x right, y up, range -12..12. A consumer's 0..24, y-down point (x', y') is x = x' - 12, y = 12 - y'. Writing 0..24 coordinates draws the icon off to the upper right and trips off_canvas.
+
+CANVAS AND GRID
+Set mode "icon" and grid { divisions: 12 }; margin is 0 or omitted. One module is 1 px when the icon is shown at 24 px. Numeric coordinates and radii sit on a 0.5 grid. Shapes may use every element type, including polyline, rect and oval.
+
+LAYERS
+paint holds fill and stroke layers in any order; a later layer draws over an earlier one. There is no erase layer. Fill { fill: Region, color } and stroke { stroke: [ids], width, color, cap?, join?, dash? } both need a "#rrggbb" color. To fill and outline one shape write two layers. At most 16 layers. Stroke width is 0.5 or more.
+
+ELEMENTS
+- polyline { through: [Point x 3..32] }: open broken line. Stroke only (or repeat of it). Two points: use line.
+- rect { corners: [Point, Point], r? }: axis-parallel rectangle from two opposite corners; r is the corner radius for all four corners (0.05 up to min(w, h)/2). Fill, stroke or repeat.
+- oval { center, rx, ry, rotate? }: four-arc egg; rotate is degrees counter-clockwise. rx and ry must differ by at least 0.05 and by a ratio of at most 4 (otherwise use circle). Fill, stroke or repeat.
+- To fill and stroke one set of vertices, declare each as a point element once and reference the ids from points and from polyline.
+
+STROKE STYLE
+cap "round" | "butt" | "square" (default "round"). join "round" | "miter" | "bevel" (default "round"; miter limit 4). dash [dash, gap] in modules (default solid). A dash starts at the first point of an element and follows its drawing direction.
+
+RULES
+Coordinates, radii, rect.r, oval.rx and ry on a 0.5 grid; stroke width at least 0.5; at most 3 distinct stroke widths in a spec; a polyline of 3 or more segments that runs one way along x (or y) with no horizontal or vertical segment has equal steps on that axis (uneven_steps); at most 40 circles; everything inside the canvas, strokes counted with half their width. Ratio counts do not apply. Topic "rules" has the table.
+
+CHECKING AND EXPORT
+gridsmith_render views default to sheet and sizes. sizes is a pixel preview: the final drawing at 24 and 16 px, each enlarged 8x with nearest neighbour; look for blur and merged strokes. segments returns the path segments (one per layer, absolute M L A Z in 0..24 y-down) as a JSON string. gridsmith_export writes <name>.svg, -sheet.svg, -guides.svg, .spec.json, .segments.json and PNGs -512, -48, -24, -16.
+
+IMPORTING AN EXISTING ICON
+gridsmith_import takes segments (1 to 64 of { d, fill?, stroke?, strokeWidth?, strokeLinecap?, strokeLinejoin?, strokeDasharray?, fillRule?, transform? }, 24 units, y down) and returns a spec rounded to the 0.5 grid with equal polyline steps (snap: false skips the rounding). Beziers become lines and circular arcs. status: clean (every subpath converted, no violations), violations, partial (skipped is not empty) or failed. diff is the share of pixels that differ from the original, faithful the same before rounding; both are reports, not limits. A skipped subpath with reason "mixed path" lists its lines and arcs in pieces, y up, so you can draw it by hand. snap.kept names shapes left unrounded because rounding would collapse them. Write the returned spec to a file and continue with gridsmith_render.
+
+EXAMPLE
+Topic "examples" has "line-chart": a rounded plate, two axes, an evenly spaced trend line and an end dot.`;
 
 const ELEMENT_NOTES: Record<string, string> = {
   point: 'A named point. at: Point.',
@@ -95,17 +131,24 @@ const ELEMENT_NOTES: Record<string, string> = {
     'Closed polygon through through: Point[] in order. Not all collinear; neighbours distinct.',
   repeat:
     'Rotates the elements in of n times about center, 360/n degrees apart; mirror also reflects across the line at angle axis through center. of holds circles, tangent_circles, lines, polygons or points shapes, never a repeat or point.',
+  polyline:
+    'Open broken line through through: Point[] (3 to 32), consecutive points distinct. Stroke or repeat only; for two points use line.',
+  rect: 'Axis-parallel rectangle through two opposite corners: Point[2]; r (optional) rounds all four corners, at most half the shorter side. Region leaf, stroke, erase or repeat of.',
+  oval: 'Four-arc oval: center, rx, ry (differ by at least 0.05, ratio at most 4), rotate degrees counter-clockwise. Region leaf, stroke, erase or repeat of.',
 };
 
 const LAYER_NOTES: Record<string, string> = {
   erase:
     'figure only, never paint[0]: { erase: [ids] } hides all earlier layers inside the listed circles, tangent_circles, polygons, points or repeats of those (a polygon counts as the area its outline encloses). Later layers are not hidden. Ids are distinct.',
+  cap: 'stroke layers: "round" (default), "butt" or "square" line ends.',
+  join: 'stroke layers: "round" (default), "miter" or "bevel" corners.',
+  dash: 'stroke layers: [dash, gap] lengths in modules; omit for a solid line.',
 };
 
 const CONSTRAINTS = [
   'An element refers only to elements declared earlier in shapes. Ids are unique, match ^[a-z][a-z0-9_]{0,31}$ and are never "spec".',
   'polygon.step must satisfy 1 <= step < n/2. repeat.n is at least 2 unless mirror is true.',
-  'mode "mark" accepts only fill layers and "figure" only stroke and erase layers. A fill region must be bounded: a half-plane needs a disc or polygon to intersect with, or to be subtracted from.',
+  'mode "mark" accepts only fill layers, "figure" only stroke and erase layers, "icon" fill and stroke layers. A fill region must be bounded: a half-plane needs a disc or polygon to intersect with, or to be subtracted from.',
   'near and toward may nest intersect points at most 2 levels. Regions nest at most 8 levels.',
   'A mark holds at most 256 support curves after repeat expansion; a figure draws at most 2048 elements after repeat expansion.',
   'Length expressions evaluate to 0.05..64 modules; stroke widths to 0.005..8.',
@@ -165,6 +208,8 @@ function topicDocument(topic: Topic): unknown {
       };
     case 'examples':
       return { topic, examples: EXAMPLES };
+    case 'icon':
+      return { topic, text: ICON };
   }
 }
 

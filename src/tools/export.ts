@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { renderExportPng } from '../render/png.js';
+import { renderSegments } from '../render/segments.js';
 import { renderGuidesSvg, renderSheetSvg } from '../render/sheet.js';
 import { renderFinalSvg } from '../render/svg.js';
 import {
@@ -58,9 +59,15 @@ const inputSchema = z.looseObject({
 });
 
 const DESCRIPTION =
-  'Writes a finished drawing to disk: <name>.svg, <name>-sheet.svg, <name>-guides.svg, <name>.spec.json, plus PNGs (a mark: -512, -64, -32, -16; a figure: -1024). ' +
+  'Writes a finished drawing to disk: <name>.svg, <name>-sheet.svg, <name>-guides.svg, <name>.spec.json, plus PNGs (a mark: -512, -64, -32, -16; a figure: -1024; an icon: -512, -48, -24, -16, and <name>.segments.json with its path segments). ' +
   'Refuses a spec that still has violations, and refuses to replace existing files unless overwrite is true. ' +
   'Render the spec with gridsmith_render and clear its violations first.';
+
+const PNG_SIZES = {
+  mark: [512, 64, 32, 16],
+  figure: [1024],
+  icon: [512, 48, 24, 16],
+} as const;
 
 type Output = { file: string; data: string | Uint8Array };
 
@@ -150,12 +157,20 @@ export function registerExport(server: McpServer): void {
           violations: ev.violations,
           exceptionsApplied: ev.exceptionsApplied,
         });
-        const sizes = ev.spec.mode === 'mark' ? [512, 64, 32, 16] : [1024];
+        const sizes = PNG_SIZES[ev.spec.mode];
         const outputs: Output[] = [
           { file: `${name}.svg`, data: finalSvg },
           { file: `${name}-sheet.svg`, data: sheet.svg },
           { file: `${name}-guides.svg`, data: renderGuidesSvg(ev.model, ev.fills) },
           { file: `${name}.spec.json`, data: `${JSON.stringify(loaded.raw, null, 2)}\n` },
+          ...(ev.spec.mode === 'icon'
+            ? [
+                {
+                  file: `${name}.segments.json`,
+                  data: `${JSON.stringify(renderSegments(ev.model, ev.fills), null, 2)}\n`,
+                },
+              ]
+            : []),
           ...sizes.map((size) => ({
             file: `${name}-${size}.png`,
             data: rasterize(TOOL, `the ${size} px PNG`, () => renderExportPng(finalSvg, size)),

@@ -1,8 +1,16 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it } from 'vitest';
 import type { FillResult } from '../../src/geom/arrangement.js';
 import { arrange } from '../../src/geom/arrangement.js';
 import type { Circle, Vec } from '../../src/geom/primitives.js';
+import { EXAMPLES } from '../../src/guide/examples.js';
+import type { RgbaImage } from '../../src/render/match.js';
+import { diffShare } from '../../src/render/match.js';
 import { renderExportPng } from '../../src/render/png.js';
+import type { SegmentSet } from '../../src/render/segments.js';
+import { renderSegments, segmentPaths } from '../../src/render/segments.js';
 import { renderFinalSvg } from '../../src/render/svg.js';
 import type { ResolvedModel } from '../../src/resolve/resolve.js';
 import { resolveSpec } from '../../src/resolve/resolve.js';
@@ -224,6 +232,18 @@ const checkDerived = (paths: string[], circles: Circle[], supports: Support[]): 
   }
   return edges;
 };
+
+describe('existing examples keep their SVG text', () => {
+  for (const example of EXAMPLES) {
+    it(example.name, () => {
+      const expected = readFileSync(
+        fileURLToPath(new URL(`../../docs/gallery/${example.name}.svg`, import.meta.url)),
+        'utf8',
+      );
+      expect(build(example.spec).svg).toBe(expected);
+    });
+  }
+});
 
 describe('final mark svg', () => {
   for (const [name, input] of configs) {
@@ -590,4 +610,273 @@ describe('final svg outline element', () => {
     expect(alphaAt(3.8, 0)).toBe(255);
     expect(alphaAt(0, 3.8)).toBe(255);
   });
+});
+
+type Cap = 'round' | 'butt' | 'square';
+type Join = 'round' | 'miter' | 'bevel';
+type Target =
+  | 'circle'
+  | 'line'
+  | 'arc'
+  | 'polygon'
+  | 'points'
+  | 'outline'
+  | 'polyline'
+  | 'rect'
+  | 'oval'
+  | 'repeat';
+
+// Pairwise cover of cap x join x dash x target (seed 1): every pair appears at least once.
+const PAIRWISE: [number, Cap, Join, 'none' | '2 1', Target][] = [
+  [1, 'square', 'round', 'none', 'oval'],
+  [2, 'round', 'miter', 'none', 'line'],
+  [3, 'square', 'bevel', '2 1', 'repeat'],
+  [4, 'butt', 'miter', '2 1', 'arc'],
+  [5, 'butt', 'bevel', 'none', 'circle'],
+  [6, 'square', 'miter', 'none', 'polygon'],
+  [7, 'square', 'miter', '2 1', 'circle'],
+  [8, 'round', 'round', 'none', 'arc'],
+  [9, 'butt', 'round', 'none', 'points'],
+  [10, 'butt', 'round', 'none', 'outline'],
+  [11, 'butt', 'round', 'none', 'rect'],
+  [12, 'round', 'bevel', '2 1', 'oval'],
+  [13, 'butt', 'round', '2 1', 'line'],
+  [14, 'round', 'bevel', '2 1', 'rect'],
+  [15, 'butt', 'round', '2 1', 'polygon'],
+  [16, 'square', 'miter', '2 1', 'outline'],
+  [17, 'round', 'round', 'none', 'repeat'],
+  [18, 'round', 'bevel', '2 1', 'points'],
+  [19, 'round', 'round', '2 1', 'circle'],
+  [20, 'square', 'bevel', 'none', 'polyline'],
+  [21, 'butt', 'bevel', '2 1', 'polyline'],
+  [22, 'square', 'bevel', 'none', 'arc'],
+  [23, 'round', 'bevel', 'none', 'polygon'],
+  [24, 'round', 'round', '2 1', 'polyline'],
+  [25, 'square', 'miter', '2 1', 'points'],
+  [26, 'square', 'bevel', '2 1', 'line'],
+  [27, 'square', 'miter', '2 1', 'polyline'],
+  [28, 'square', 'round', '2 1', 'rect'],
+  [29, 'round', 'bevel', 'none', 'outline'],
+  [30, 'butt', 'miter', 'none', 'oval'],
+  [31, 'butt', 'bevel', '2 1', 'repeat'],
+  [32, 'round', 'miter', 'none', 'rect'],
+  [33, 'square', 'miter', 'none', 'repeat'],
+];
+
+/** Shapes for each target; the stroked element is always `t`. */
+const TARGET_SHAPES: Record<Target, unknown[]> = {
+  circle: [{ id: 't', type: 'circle', center: [1, 0.5], r: 7 }],
+  line: [{ id: 't', type: 'line', from: [-8, -5], to: [7, 6] }],
+  arc: [
+    { id: 'c', type: 'circle', r: 8 },
+    { id: 't', type: 'arc', on: 'c', from: 30, to: 300 },
+  ],
+  polygon: [
+    { id: 'c', type: 'circle', r: 8 },
+    { id: 't', type: 'polygon', in: 'c', n: 5, rotate: 10 },
+  ],
+  points: [
+    {
+      id: 't',
+      type: 'points',
+      through: [
+        [-8, -6],
+        [8, -6],
+        [3, 7],
+        [-4, 2],
+      ],
+    },
+  ],
+  outline: [
+    { id: 'a', type: 'circle', center: [-4, 0], r: 4 },
+    { id: 'b', type: 'circle', center: [4, 0], r: 4 },
+    { id: 'top', type: 'line', from: [4, 4], to: [-4, 4] },
+    { id: 'bottom', type: 'line', from: [-4, -4], to: [4, -4] },
+    { id: 't', type: 'outline', through: ['b', 'top', 'a', 'bottom'] },
+  ],
+  polyline: [
+    {
+      id: 't',
+      type: 'polyline',
+      through: [
+        [-9, -6],
+        [-4, 5],
+        [1, -4],
+        [5, 6],
+        [9, 0],
+      ],
+    },
+  ],
+  rect: [
+    {
+      id: 't',
+      type: 'rect',
+      corners: [
+        [-9, -6],
+        [9, 6],
+      ],
+    },
+  ],
+  oval: [{ id: 't', type: 'oval', center: [0, 0], rx: 9, ry: 5, rotate: 30 }],
+  repeat: [
+    // Copies stay apart: overlapping strokes blend once in one path but twice across elements.
+    {
+      id: 'r',
+      type: 'rect',
+      corners: [
+        [3, -2],
+        [10, 2],
+      ],
+      r: 1,
+    },
+    { id: 't', type: 'repeat', of: ['r'], n: 4 },
+  ],
+};
+
+const SIDE = 256;
+
+const raster = (svg: string): RgbaImage => {
+  const image = new Resvg(svg, {
+    background: '#ffffff',
+    fitTo: { mode: 'width', value: SIDE },
+    font: { loadSystemFonts: false },
+  }).render();
+  return { width: image.width, height: image.height, data: new Uint8Array(image.pixels) };
+};
+
+const kebab = (key: string): string => key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+
+/** Segments assembled as a consumer does: a path per segment, only the attributes present. */
+const consumerSvg = (set: SegmentSet): string => {
+  const paths = set.segments.map((s) => {
+    const attrs = Object.entries(s)
+      .filter(([key]) => key !== 'd')
+      .map(([key, value]) => ` ${kebab(key)}="${value}"`)
+      .join('');
+    const fill = 'fill' in s ? '' : ' fill="none"';
+    return `<path d="${s.d}"${attrs}${fill}/>`;
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${set.canvas} ${set.canvas}">${paths.join('')}</svg>`;
+};
+
+/** Share of pixels off by more than 2, and by more than 32, in any RGBA channel. */
+const differences = (a: string, b: string): { slight: number; large: number } => {
+  const ia = raster(a);
+  const ib = raster(b);
+  return { slight: diffShare(ia, ib, 2), large: diffShare(ia, ib, 32) };
+};
+
+describe('icon drawing', () => {
+  const iconOf = (shapes: unknown[], paint: unknown[]): unknown => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes,
+    paint,
+  });
+
+  it('uses a 24 viewBox and one path per layer in paint order', () => {
+    const { model, fills, svg } = build(
+      iconOf(
+        [
+          {
+            id: 'plate',
+            type: 'rect',
+            corners: [
+              [-10, -10],
+              [10, 10],
+            ],
+            r: 3,
+          },
+          {
+            id: 'trend',
+            type: 'polyline',
+            through: [
+              [-6, -3],
+              [-2, 1],
+              [2, -1],
+              [6, 5],
+            ],
+          },
+          { id: 'dot', type: 'circle', center: [6, 5], r: 1.5 },
+        ],
+        [
+          { fill: 'plate', color: '#f3f2f1' },
+          { stroke: ['trend'], width: 1.5, color: '#107c41' },
+          { fill: 'dot', color: '#107c41' },
+        ],
+      ),
+    );
+    expect(svg.split('\n')[0]).toBe('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">');
+    const paths = svg.match(/<path [^>]*>/g) ?? [];
+    expect(paths).toHaveLength(3);
+    expect(paths[0]).toContain('fill="#f3f2f1"');
+    expect(paths[1]).toContain('stroke="#107c41"');
+    expect(paths[1]).toContain('fill="none"');
+    expect(paths[2]).toContain('fill="#107c41"');
+    expect(svg).toContain(segmentPaths(renderSegments(model, fills)));
+  });
+
+  it('writes non-default caps, joins and dashes on figure elements', () => {
+    const { svg } = build(
+      figureOf(
+        [
+          {
+            id: 'p',
+            type: 'polyline',
+            through: [
+              [-2, -1],
+              [0, 1],
+              [2, -1],
+            ],
+          },
+        ],
+        [{ stroke: ['p'], width: 0.25, cap: 'butt', join: 'miter', dash: [0.5, 0.25] }],
+      ),
+    );
+    expect(svg).toContain(
+      '<polyline points="-2 1 0 -1 2 1" fill="none" stroke-linejoin="miter" stroke-linecap="butt" stroke="#000000" stroke-width="0.25" stroke-dasharray="0.5 0.25"/>',
+    );
+  });
+
+  for (const [row, cap, join, dash, target] of PAIRWISE) {
+    it(`row ${row}: ${target}, cap ${cap}, join ${join}, dash ${dash}`, () => {
+      const layer = {
+        stroke: ['t'],
+        width: 1,
+        color: '#1a5fb4',
+        cap,
+        join,
+        ...(dash === 'none' ? {} : { dash: [2, 1] }),
+      };
+      const shapes = TARGET_SHAPES[target];
+      const { model, fills, svg } = build(iconOf(shapes, [layer]));
+
+      expect(svg).toContain('viewBox="0 0 24 24"');
+      const paths = svg.match(/<path [^>]*>/g) ?? [];
+      expect(paths).toHaveLength(1);
+      const attr = (name: string) => paths[0]?.match(new RegExp(` ${name}="([^"]*)"`))?.[1];
+      expect(attr('fill')).toBe('none');
+      expect(attr('stroke')).toBe('#1a5fb4');
+      expect(attr('stroke-width')).toBe('1');
+      expect(attr('stroke-linecap')).toBe(cap);
+      expect(attr('stroke-linejoin')).toBe(join);
+      expect(attr('stroke-dasharray')).toBe(dash === 'none' ? undefined : '2 1');
+
+      const consumer = differences(consumerSvg(renderSegments(model, fills)), svg);
+      expect(consumer.slight).toBeLessThanOrEqual(0.0005);
+      expect(consumer.large).toBe(0);
+
+      const figure = build({
+        version: 1,
+        mode: 'figure',
+        grid: { divisions: 8, margin: 4 },
+        shapes,
+        paint: [layer],
+      });
+      const independent = differences(figure.svg, svg);
+      expect(independent.slight).toBeLessThanOrEqual(0.0005);
+      expect(independent.large).toBe(0);
+    });
+  }
 });

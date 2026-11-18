@@ -1,0 +1,33 @@
+{
+  "clean": [
+    { "d": "M3 5h18v14H3z", "fill": "#f3f2f1" },
+    {
+      "d": "M5 16l4-4 4 3 4-6 4 2",
+      "fill": "none",
+      "stroke": "#107c41",
+      "strokeWidth": 1,
+      "strokeLinecap": "round",
+      "strokeLinejoin": "round"
+    }
+  ],
+  "uneven": [
+    {
+      "d": "M3.3 17l3.1-4.6 4.2 3.2 2.5-5.4 7.3-1.3",
+      "fill": "none",
+      "stroke": "#107c41",
+      "strokeWidth": 1.2,
+      "strokeLinecap": "round",
+      "strokeLinejoin": "round"
+    }
+  ],
+  "curved": [
+    {
+      "d": "M4 18c4-10 12-10 16 0",
+      "fill": "none",
+      "stroke": "#0f6cbd",
+      "strokeWidth": 1,
+      "strokeLinecap": "round",
+      "strokeLinejoin": "round"
+    }
+  ]
+}

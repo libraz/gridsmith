@@ -21,10 +21,20 @@ const mark = (shapes: Json[], fill: unknown, extra: Json = {}, divisions = 4): S
     ...extra,
   }) as SpecInput;
 
+const icon = (shapes: Json[], paint: Json[], extra: Json = {}): SpecInput =>
+  ({ version: 1, mode: 'icon', grid: { divisions: 12 }, shapes, paint, ...extra }) as SpecInput;
+
 const circle = (id: string, r: number | string, center?: unknown): Json =>
   center === undefined ? { id, type: 'circle', r } : { id, type: 'circle', r, center };
 
 const stroke = (ids: string[], width: number | string = 0.125): Json => ({ stroke: ids, width });
+
+const polyline = (id: string, through: unknown[]): Json => ({ id, type: 'polyline', through });
+const iconStroke = (ids: string[], width: number): Json => ({
+  stroke: ids,
+  width,
+  color: '#107c41',
+});
 
 const run = (input: SpecInput) => {
   const spec = specSchema.parse(input);
@@ -91,6 +101,29 @@ const PAIRS: Record<Exclude<RuleId, 'unused_exception'>, Pair> = {
   unused_shape: {
     input: figure([circle('a', 2), circle('b', 3)], [stroke(['a'])]),
     target: 'b',
+  },
+  uneven_steps: {
+    input: figure(
+      [
+        polyline('pl', [
+          [-4, 0],
+          [-3, 1],
+          [-1, 2],
+          [0, 3],
+        ]),
+      ],
+      [stroke(['pl'])],
+      {},
+      8,
+    ),
+    target: 'pl',
+  },
+  width_count: {
+    input: icon(
+      [{ id: 'ln', type: 'line', from: [-6, 0], to: [6, 0] }],
+      [0.5, 1, 1.5, 2].map((w) => iconStroke(['ln'], w)),
+    ),
+    target: 'spec',
   },
 };
 
@@ -830,7 +863,12 @@ describe('outline cap and outline rules', () => {
   });
 
   it('lists the cap thresholds', () => {
-    expect(RULES.circle_count.maxCircles).toEqual({ mark: 8, mark_outline: 40, figure: 16 });
+    expect(RULES.circle_count.maxCircles).toEqual({
+      mark: 8,
+      mark_outline: 40,
+      figure: 16,
+      icon: 40,
+    });
   });
 
   it('exempts a corner from off_grid', () => {
@@ -902,5 +940,387 @@ describe('outline cap and outline rules', () => {
     expect(has(input, 'empty_fill')).toBe(false);
     expect(has(input, 'off_canvas')).toBe(false);
     expect(has(input, 'unused_shape')).toBe(false);
+  });
+});
+
+describe('icon mode rules', () => {
+  const rect = (id: string, corners: unknown[], r?: number): Json =>
+    r === undefined ? { id, type: 'rect', corners } : { id, type: 'rect', corners, r };
+  const oval = (id: string, rx: number, ry: number, extra: Json = {}): Json => ({
+    id,
+    type: 'oval',
+    center: [0, 0],
+    rx,
+    ry,
+    ...extra,
+  });
+  const plate = rect(
+    'plate',
+    [
+      [-6, -4],
+      [6, 4],
+    ],
+    2,
+  );
+  const fillOf = (region: unknown): Json => ({ fill: region, color: '#107c41' });
+  const iconWith = (shapes: Json[], width = 1): SpecInput =>
+    icon(shapes, [
+      iconStroke(
+        shapes.map((s) => String(s.id)),
+        width,
+      ),
+    ]);
+
+  it('skips rules whose modes do not include the spec mode', () => {
+    const ratios = icon(
+      [circle('a', 'R/2'), circle('b', 'R/3'), circle('c', 'R/4'), circle('d', 'R/6')],
+      [fillOf({ union: ['a', 'b', 'c', 'd'] })],
+    );
+    expect(has(ratios, 'ratio_count')).toBe(false);
+    expect(RULES.ratio_count.modes).not.toContain('icon');
+    const widths = figure(
+      [{ id: 'ln', type: 'line', from: [-2, 0], to: [2, 0] }],
+      [0.2, 0.3, 0.4, 0.5].map((w) => stroke(['ln'], w)),
+    );
+    expect(has(widths, 'width_count')).toBe(false);
+  });
+
+  describe('circle_count', () => {
+    const grid = (count: number): SpecInput => {
+      const shapes = Array.from({ length: count }, (_, k) =>
+        circle(`c${k}`, 0.5, [-10 + (k % 7) * 3, -7.5 + Math.floor(k / 7) * 3]),
+      );
+      const chunks = [0, 1, 2]
+        .map((k) => shapes.slice(k * 14, (k + 1) * 14))
+        .filter((c) => c.length > 1);
+      return icon(shapes, [fillOf({ union: chunks.map((chunk) => ({ union: ids(chunk) })) })]);
+    };
+
+    it('allows 40 circles and rejects 41', () => {
+      expect(has(grid(40), 'circle_count')).toBe(false);
+      const [v] = run(grid(41)).violations.filter((x) => x.rule === 'circle_count');
+      expect(v?.message).toBe('41 circles declared, at most 40 allowed in icon');
+    });
+
+    it('does not count rect, oval or polyline', () => {
+      const shapes = [
+        plate,
+        oval('o', 5, 3),
+        polyline('pl', [
+          [-4, 0],
+          [0, 2],
+          [4, 0],
+        ]),
+      ];
+      expect(has(iconWith(shapes), 'circle_count')).toBe(false);
+    });
+  });
+
+  describe('off_grid', () => {
+    it('uses a step of 0.5 for the numbers of the new shapes', () => {
+      const clean = iconWith([
+        rect(
+          'r1',
+          [
+            [-5.5, -3],
+            [5.5, 3],
+          ],
+          1.5,
+        ),
+        oval('o', 6.5, 3.5, { center: [0.5, -1] }),
+        polyline('pl', [
+          [-4, 0],
+          [0, 2.5],
+          [4, 0],
+        ]),
+      ]);
+      expect(has(clean, 'off_grid')).toBe(false);
+    });
+
+    it.each([
+      [
+        'rect corner',
+        rect('s', [
+          [-5.3, -3],
+          [5, 3],
+        ]),
+        'corners[0] x 5.3'.replace('5.3', '-5.3'),
+      ],
+      [
+        'rect.r',
+        rect(
+          's',
+          [
+            [-5, -3],
+            [5, 3],
+          ],
+          1.25,
+        ),
+        'r 1.25',
+      ],
+      ['oval center', oval('s', 5, 3, { center: [0, 0.2] }), 'center y 0.2'],
+      ['oval rx', oval('s', 5.2, 3), 'rx 5.2'],
+      ['oval ry', oval('s', 5, 3.1), 'ry 3.1'],
+      [
+        'polyline vertex',
+        polyline('s', [
+          [-4, 0],
+          [0, 2.3],
+          [4, 0],
+        ]),
+        'through[1] y 2.3',
+      ],
+    ])('reports an off-grid %s', (_name, shape, text) => {
+      const hit = run(iconWith([shape])).violations.find((v) => v.rule === 'off_grid');
+      expect(hit?.target).toBe('s');
+      expect(hit?.message).toContain(text);
+    });
+
+    it('does not check stroke width or dash', () => {
+      const input = icon(
+        [
+          polyline('pl', [
+            [-4, 0],
+            [0, 2],
+            [4, 0],
+          ]),
+        ],
+        [{ ...iconStroke(['pl'], 0.7), dash: [0.3, 0.2] }],
+      );
+      expect(has(input, 'off_grid')).toBe(false);
+    });
+  });
+
+  describe('angle', () => {
+    const rotated = (deg: number, make: (shapes: Json[]) => SpecInput): SpecInput =>
+      make([oval('o', 5, 3, { rotate: deg })]);
+
+    it('checks oval.rotate in every mode', () => {
+      const asIcon = (shapes: Json[]) => iconWith(shapes);
+      const asFigure = (shapes: Json[]) => figure(shapes, [stroke(['o'])], {}, 8);
+      for (const make of [asIcon, asFigure]) {
+        expect(has(rotated(7, make), 'angle', 'o')).toBe(true);
+        expect(has(rotated(45, make), 'angle')).toBe(false);
+      }
+    });
+  });
+
+  describe('off_canvas', () => {
+    it('measures a fill by its region bounding box', () => {
+      const wide = icon(
+        [
+          rect('big', [
+            [-13, -2],
+            [11, 2],
+          ]),
+        ],
+        [fillOf('big')],
+      );
+      expect(has(wide, 'off_canvas', 'paint[0]')).toBe(true);
+      const fits = icon(
+        [
+          rect('big', [
+            [-12, -2],
+            [11, 2],
+          ]),
+        ],
+        [fillOf('big')],
+      );
+      expect(has(fits, 'off_canvas')).toBe(false);
+    });
+
+    it('adds half the width to a polyline stroke', () => {
+      const pl = polyline('pl', [
+        [-4, 0],
+        [0, 2],
+        [11.5, 0],
+      ]);
+      expect(has(iconWith([pl], 1.5), 'off_canvas', 'pl')).toBe(true);
+      expect(has(iconWith([pl], 0.5), 'off_canvas')).toBe(false);
+    });
+
+    it('adds half the width to a rect and an oval stroke', () => {
+      const wideRect = rect('r1', [
+        [-11.5, -5],
+        [11.5, 5],
+      ]);
+      expect(has(iconWith([wideRect], 2), 'off_canvas', 'r1')).toBe(true);
+      expect(has(iconWith([wideRect], 0.5), 'off_canvas')).toBe(false);
+      const wideOval = oval('o', 11.5, 5);
+      expect(has(iconWith([wideOval], 1.5), 'off_canvas', 'o')).toBe(true);
+      expect(has(iconWith([wideOval], 0.5), 'off_canvas')).toBe(false);
+    });
+  });
+
+  describe('empty_fill', () => {
+    it('applies to icon fill layers only', () => {
+      const empty = icon(
+        [oval('a', 5, 3), oval('b', 5, 3)],
+        [fillOf({ subtract: ['a', 'b'] }), iconStroke(['a'], 1)],
+      );
+      expect(has(empty, 'empty_fill', 'paint[0]')).toBe(true);
+      expect(has(icon([plate], [fillOf('plate')]), 'empty_fill')).toBe(false);
+    });
+  });
+
+  describe('thin_stroke', () => {
+    const line = { id: 'ln', type: 'line', from: [-6, 0], to: [6, 0] };
+
+    it('requires 0.5 module for an icon stroke', () => {
+      const thin = icon([line], [fillOf('c'), iconStroke(['ln'], 0.4)].slice(1));
+      const [v] = run(thin).violations.filter((x) => x.rule === 'thin_stroke');
+      expect(v).toMatchObject({
+        target: 'paint[0]',
+        message: 'stroke is 0.4 wide, at least 0.5 required',
+      });
+      expect(has(icon([line], [iconStroke(['ln'], 0.5)]), 'thin_stroke')).toBe(false);
+    });
+
+    it('keeps the pixel formula for a figure', () => {
+      const fig = (w: number) =>
+        figure([{ id: 'ln', type: 'line', from: [-2, 0], to: [2, 0] }], [stroke(['ln'], w)]);
+      expect(has(fig(0.1), 'thin_stroke')).toBe(false);
+      expect(has(fig(0.01), 'thin_stroke')).toBe(true);
+    });
+  });
+
+  describe('unused_shape', () => {
+    it('reports an unpainted rect, oval or polyline and accepts painted ones', () => {
+      const pl = polyline('pl', [
+        [-4, 0],
+        [0, 2],
+        [4, 0],
+      ]);
+      const unpainted = icon([plate, oval('o', 5, 3), pl], [iconStroke(['pl'], 1)]);
+      const targets = run(unpainted)
+        .violations.filter((v) => v.rule === 'unused_shape')
+        .map((v) => v.target);
+      expect(targets).toEqual(['plate', 'o']);
+      const painted = icon(
+        [plate, oval('o', 5, 3), pl],
+        [fillOf('plate'), iconStroke(['o', 'pl'], 1)],
+      );
+      expect(has(painted, 'unused_shape')).toBe(false);
+    });
+  });
+
+  describe('uneven_steps', () => {
+    const steps = (through: unknown[]): SpecInput => iconWith([polyline('pl', through)]);
+
+    it('rejects x = -9.2, -4.6, -0.4, 4, 9.2', () => {
+      const input = steps([
+        [-9.2, -3],
+        [-4.6, 2],
+        [-0.4, -1],
+        [4, 3],
+        [9.2, 0],
+      ]);
+      expect(run(input).violations.find((v) => v.rule === 'uneven_steps')).toMatchObject({
+        target: 'pl',
+        message: '4 segments with uneven steps along x: 4.6, 4.2, 4.4, 5.2',
+      });
+    });
+
+    it('accepts x = -8, -4, 0, 4, 8', () => {
+      expect(
+        has(
+          steps([
+            [-8, -3],
+            [-4, 2],
+            [0, -1],
+            [4, 3],
+            [8, 0],
+          ]),
+          'uneven_steps',
+        ),
+      ).toBe(false);
+    });
+
+    it('checks y when y runs one way and x moves in every segment', () => {
+      const uneven = steps([
+        [-3, -8],
+        [2, -4],
+        [-1, 1],
+        [4, 8],
+      ]);
+      expect(run(uneven).violations.find((v) => v.rule === 'uneven_steps')?.message).toBe(
+        '3 segments with uneven steps along y: 4, 5, 7',
+      );
+      expect(
+        has(
+          steps([
+            [-3, -8],
+            [2, -4],
+            [-1, 0],
+            [4, 4],
+          ]),
+          'uneven_steps',
+        ),
+      ).toBe(false);
+    });
+
+    it('does not check a letter A shape with a horizontal middle segment', () => {
+      expect(
+        has(
+          steps([
+            [-6, -6],
+            [-3, 2],
+            [2, 2],
+            [6, -6],
+          ]),
+          'uneven_steps',
+        ),
+      ).toBe(false);
+    });
+
+    it('does not check fewer than 3 segments or a zigzag in both axes', () => {
+      expect(
+        has(
+          steps([
+            [-6, -4],
+            [-1, 2],
+            [6, 5],
+          ]),
+          'uneven_steps',
+        ),
+      ).toBe(false);
+      expect(
+        has(
+          steps([
+            [-6, -4],
+            [-1, 2],
+            [-3, -5],
+            [6, 6],
+          ]),
+          'uneven_steps',
+        ),
+      ).toBe(false);
+    });
+
+    it('applies to a figure as well', () => {
+      expect(has(PAIRS.uneven_steps.input, 'uneven_steps', 'pl')).toBe(true);
+    });
+  });
+
+  describe('width_count', () => {
+    const widths = (list: number[]): SpecInput =>
+      icon(
+        [{ id: 'ln', type: 'line', from: [-6, 0], to: [6, 0] }],
+        list.map((w) => iconStroke(['ln'], w)),
+      );
+
+    it('rejects 4 distinct widths', () => {
+      const [v] = run(widths([0.5, 1, 1.5, 2])).violations.filter((x) => x.rule === 'width_count');
+      expect(v).toEqual({
+        rule: 'width_count',
+        target: 'spec',
+        message: '4 distinct stroke widths, at most 3 allowed: 0.5, 1, 1.5, 2',
+      });
+    });
+
+    it('accepts 3 distinct widths, counting widths within 1e-9 once', () => {
+      expect(has(widths([0.5, 1, 1.5]), 'width_count')).toBe(false);
+      expect(has(widths([0.5, 1, 1 + 1e-10, 1.5]), 'width_count')).toBe(false);
+    });
   });
 });

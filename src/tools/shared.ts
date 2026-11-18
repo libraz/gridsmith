@@ -12,7 +12,7 @@ import { lint } from '../rules/lint.js';
 import type { Spec } from '../spec/schema.js';
 import { specSchema } from '../spec/schema.js';
 
-export type ToolName = 'gridsmith_guide' | 'gridsmith_render' | 'gridsmith_export';
+export type ToolName = 'gridsmith_guide' | 'gridsmith_render' | 'gridsmith_export' | 'gridsmith_import';
 
 export const RESPONSE_MAX_CHARS = 20000;
 export const ERROR_MAX_CHARS = 10000;

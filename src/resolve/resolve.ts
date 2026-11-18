@@ -20,6 +20,7 @@ import {
   sub,
 } from '../geom/primitives.js';
 import type { RegionNode } from '../geom/region.js';
+import { ovalChain, ovalRadii, rectChain } from '../geom/shapes.js';
 import type { TangentCandidate, TangentTarget } from '../geom/tangent.js';
 import { tangentCandidates } from '../geom/tangent.js';
 import { evaluateLengthExpression, parseLengthExpression } from '../spec/length.js';
@@ -75,14 +76,45 @@ export type ResolvedOutline = {
   area: number;
 };
 
-/** A repeated element: a tangent circle is copied as a plain circle. */
+/** An open polyline through `vertices` in the written order. */
+export type ResolvedPolyline = { type: 'polyline'; id: string; vertices: Vec[] };
+
+/** Axis-aligned rectangle as a counter-clockwise chain from the bottom-left; `r` is 0 when sharp. */
+export type ResolvedRect = {
+  type: 'rect';
+  id: string;
+  min: Vec;
+  max: Vec;
+  r: number;
+  pieces: ChainPiece[];
+  joints: ChainJoint[];
+  area: number;
+};
+
+/** Four-arc oval; `rotate` is degrees, `end` and `side` the radii at the major and minor axis ends. */
+export type ResolvedOval = {
+  type: 'oval';
+  id: string;
+  center: Vec;
+  rx: number;
+  ry: number;
+  rotate: number;
+  end: number;
+  side: number;
+  pieces: ChainPiece[];
+  joints: ChainJoint[];
+  area: number;
+};
+
+/** A repeated element: a tangent circle is copied as a plain circle, a rect or oval as an outline. */
 export type RepeatElement =
   | ResolvedCircle
   | ResolvedLine
   | ResolvedArc
   | ResolvedPolygon
   | ResolvedPoints
-  | ResolvedOutline;
+  | ResolvedOutline
+  | ResolvedPolyline;
 
 /** Copy 0 is the original, which is not listed; generated copies are numbered from 1 per `of` element across all repeats. */
 export type RepeatCopy = { of: string; copy: number; element: RepeatElement };
@@ -105,6 +137,9 @@ export type ResolvedElement =
   | ResolvedPolygon
   | ResolvedPoints
   | ResolvedOutline
+  | ResolvedPolyline
+  | ResolvedRect
+  | ResolvedOval
   | ResolvedRepeat;
 
 export type ResolvedFill = { index: number; color: string; region: RegionNode };
@@ -114,7 +149,8 @@ export type StrokeGeometry =
   | { kind: 'segment'; from: Vec; to: Vec }
   | ({ kind: 'arc' } & ArcGeometry)
   | { kind: 'polygon'; loops: Vec[][] }
-  | { kind: 'chain'; pieces: ChainPiece[] };
+  | { kind: 'chain'; pieces: ChainPiece[] }
+  | { kind: 'polyline'; points: Vec[] };
 
 /** A closed shape an erase layer hides the earlier layers inside of. */
 export type EraseShape =
@@ -132,6 +168,10 @@ export type ResolvedStroke = {
   color: string;
   width: number;
   widthLabel: string;
+  cap: 'round' | 'butt' | 'square';
+  join: 'round' | 'miter' | 'bevel';
+  /** Dash and gap lengths, or null for a solid line. */
+  dash: [number, number] | null;
   items: StrokeItem[];
 };
 
@@ -145,9 +185,9 @@ export type ResolvedModel = {
   margin: number;
   elements: ResolvedElement[];
   byId: Map<string, ResolvedElement>;
-  /** Fill layers of a `mark`, empty for a `figure`. */
+  /** Fill layers of a `mark` or `icon`, empty for a `figure`; `index` orders them against `strokes`. */
   fills: ResolvedFill[];
-  /** Stroke layers of a `figure`, empty for a `mark`. */
+  /** Stroke layers of a `figure` or `icon`, empty for a `mark`. */
   strokes: ResolvedStroke[];
   /** Erase layers of a `figure`; `index` orders them against `strokes`. */
   erases: ResolvedErase[];
@@ -162,6 +202,10 @@ const MERGE = 1e-7;
 const TIE = 1e-6;
 /** How far an arc end given as a point may lie from the circle. */
 const ARC_ON_CIRCLE = 1e-6;
+/** Smallest rect side and smallest oval semi-axis difference. */
+const MIN_EXTENT = 0.05;
+/** Largest oval semi-axis ratio. */
+const OVAL_RATIO_MAX = 4;
 
 type Drawable =
   | ResolvedCircle
@@ -170,7 +214,10 @@ type Drawable =
   | ResolvedArc
   | ResolvedPolygon
   | ResolvedPoints
-  | ResolvedOutline;
+  | ResolvedOutline
+  | ResolvedPolyline
+  | ResolvedRect
+  | ResolvedOval;
 type Placement = { el: Drawable; copy: number };
 type Curve = { kind: 'circle'; circle: Circle } | { kind: 'line'; line: Line };
 
@@ -263,6 +310,12 @@ const sameGeometry = (a: RepeatElement, b: RepeatElement): boolean => {
   if (a.type === 'outline' && b.type === 'outline') {
     return sameChain(a, b);
   }
+  if (a.type === 'polyline' && b.type === 'polyline') {
+    return (
+      a.vertices.length === b.vertices.length &&
+      a.vertices.every((p, k) => distance(p, b.vertices[k] as Vec) <= SNAP)
+    );
+  }
   return false;
 };
 
@@ -294,6 +347,8 @@ const mapElement = (el: RepeatElement, f: (p: Vec) => Vec, mirrored: boolean): R
       return { ...el, loops: [el.loops[0].map(f)], vertices: el.vertices.map(f) };
     case 'outline':
       return { ...el, ...transformChain(el, f, mirrored) };
+    case 'polyline':
+      return { ...el, vertices: el.vertices.map(f) };
   }
 };
 
@@ -691,6 +746,78 @@ export function resolveSpec(spec: Spec): ResolveResult {
     }
   };
 
+  const resolvePolyline = (shape: Extract<Shape, { type: 'polyline' }>): ResolvedPolyline => {
+    const vertices = shape.through.map((p, k) => located(p, `through[${k}]`));
+    vertices.forEach((v, k) => {
+      const next = vertices[k + 1];
+      if (next !== undefined && distance(v, next) <= SNAP) {
+        throw new Failure(
+          `polyline segment has no length (received: through[${k}] ${fmtPoint(v)} and through[${k + 1}] ${fmtPoint(next)}, distance ${fmt(distance(v, next))}; allowed: distance above ${SNAP}). Remove or move one of them.`,
+        );
+      }
+    });
+    return { type: 'polyline', id: shape.id, vertices };
+  };
+
+  const resolveRect = (shape: Extract<Shape, { type: 'rect' }>): ResolvedRect => {
+    const a = located(shape.corners[0], 'corners[0]');
+    const b = located(shape.corners[1], 'corners[1]');
+    const min = { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y) };
+    const max = { x: Math.max(a.x, b.x), y: Math.max(a.y, b.y) };
+    const w = max.x - min.x;
+    const h = max.y - min.y;
+    if (w < MIN_EXTENT || h < MIN_EXTENT) {
+      throw new Failure(
+        `rect is too small (received: width ${fmt(w)}, height ${fmt(h)}; allowed: each at least ${MIN_EXTENT}). Move the corners apart.`,
+      );
+    }
+    const limit = Math.min(w, h) / 2;
+    const r = shape.r === undefined ? 0 : evalLength(shape.r, LENGTH_MIN, LENGTH_MAX, 'r').value;
+    if (r > limit + EPS) {
+      throw new Failure(
+        `rect corner radius is too large (received: r ${fmt(r)} for width ${fmt(w)}, height ${fmt(h)}; allowed: up to ${fmt(limit)}, half the shorter side). Reduce r or enlarge the rect.`,
+      );
+    }
+    if (r > 0 && w - 2 * r <= SNAP && h - 2 * r <= SNAP) {
+      throw new Failure(
+        `rect is a circle (received: a square of side ${fmt(w)} with r ${fmt(r)}; allowed: r below half the side, or unequal sides). Use a circle of radius ${fmt(r)} instead.`,
+      );
+    }
+    const chain = rectChain(min, max, Math.min(r, limit));
+    return { type: 'rect', id: shape.id, min, max, r: Math.min(r, limit), ...chain };
+  };
+
+  const resolveOval = (shape: Extract<Shape, { type: 'oval' }>): ResolvedOval => {
+    const center = located(shape.center, 'center');
+    const rx = evalLength(shape.rx, LENGTH_MIN, LENGTH_MAX, 'rx').value;
+    const ry = evalLength(shape.ry, LENGTH_MIN, LENGTH_MAX, 'ry').value;
+    const a = Math.max(rx, ry);
+    const b = Math.min(rx, ry);
+    if (a - b < MIN_EXTENT) {
+      throw new Failure(
+        `oval is a circle (received: rx ${fmt(rx)}, ry ${fmt(ry)}; allowed: rx and ry at least ${MIN_EXTENT} apart). Use a circle instead.`,
+      );
+    }
+    if (a / b > OVAL_RATIO_MAX) {
+      throw new Failure(
+        `oval is too elongated (received: rx ${fmt(rx)}, ry ${fmt(ry)}, ratio ${fmt(a / b)}; allowed: a ratio up to ${OVAL_RATIO_MAX}). Bring rx and ry closer.`,
+      );
+    }
+    const { end, side } = ovalRadii(rx, ry);
+    const chain = ovalChain(center, rx, ry, (shape.rotate * Math.PI) / 180);
+    return {
+      type: 'oval',
+      id: shape.id,
+      center,
+      rx,
+      ry,
+      rotate: shape.rotate,
+      end,
+      side,
+      ...chain,
+    };
+  };
+
   const resolveRepeat = (shape: Extract<Shape, { type: 'repeat' }>): ResolvedRepeat => {
     const center = located(shape.center, 'center');
     const originals = shape.of.map((id): RepeatElement => {
@@ -704,10 +831,20 @@ export function resolveSpec(spec: Spec): ResolveResult {
         case 'polygon':
         case 'points':
         case 'outline':
+        case 'polyline':
           return el;
+        case 'rect':
+        case 'oval':
+          return {
+            type: 'outline',
+            id: el.id,
+            pieces: el.pieces,
+            joints: el.joints,
+            area: el.area,
+          };
         default:
           throw new Failure(
-            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, arc, polygon, points or outline)`,
+            `cannot repeat (received: "${id}", a ${el.type}; allowed: a circle, line, arc, polygon, points, outline, polyline, rect or oval)`,
           );
       }
     });
@@ -821,6 +958,12 @@ export function resolveSpec(spec: Spec): ResolveResult {
         return resolveOutline(shape);
       case 'repeat':
         return resolveRepeat(shape);
+      case 'polyline':
+        return resolvePolyline(shape);
+      case 'rect':
+        return resolveRect(shape);
+      case 'oval':
+        return resolveOval(shape);
     }
   };
 
@@ -869,9 +1012,12 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'points':
         return { kind: 'poly', loops: el.loops, source };
       case 'outline':
+      case 'rect':
+      case 'oval':
         return { kind: 'chain', pieces: el.pieces, source };
       case 'line':
       case 'arc':
+      case 'polyline':
         return null;
     }
   };
@@ -900,7 +1046,11 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'points':
         return { id: el.id, copy, via, kind: 'polygon', loops: el.loops };
       case 'outline':
+      case 'rect':
+      case 'oval':
         return { id: el.id, copy, via, kind: 'chain', pieces: el.pieces };
+      case 'polyline':
+        return { id: el.id, copy, via, kind: 'polyline', points: el.vertices };
     }
   };
 
@@ -913,11 +1063,14 @@ export function resolveSpec(spec: Spec): ResolveResult {
       case 'points':
         return { kind: 'polygon', loops: el.loops };
       case 'outline':
+      case 'rect':
+      case 'oval':
         return { kind: 'chain', pieces: el.pieces };
       case 'line':
       case 'arc':
+      case 'polyline':
         throw new Failure(
-          `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points, outline or repeat of those)`,
+          `cannot erase (received: "${el.id}", a ${el.type}; allowed: a circle, polygon, points, outline, rect, oval or repeat of those)`,
         );
     }
   };
@@ -933,7 +1086,7 @@ export function resolveSpec(spec: Spec): ResolveResult {
       }
       if (leaves.length === 0) {
         throw new Failure(
-          `region has no area (received: "${region}"; allowed: a circle, polygon, points, outline or repeat of those)`,
+          `region has no area (received: "${region}"; allowed: a circle, polygon, points, outline, rect, oval or repeat of those)`,
         );
       }
       return { kind: 'union', children: leaves };
@@ -981,7 +1134,16 @@ export function resolveSpec(spec: Spec): ResolveResult {
     const items = layer.stroke.flatMap((id) =>
       expand(lookup(id)).map((placement) => itemOf(placement, id)),
     );
-    strokes.push({ index, color: layer.color, width: width.value, widthLabel: width.label, items });
+    strokes.push({
+      index,
+      color: layer.color,
+      width: width.value,
+      widthLabel: width.label,
+      cap: layer.cap ?? 'round',
+      join: layer.join ?? 'round',
+      dash: layer.dash ?? null,
+      items,
+    });
   };
 
   spec.paint.forEach((layer, index) => {

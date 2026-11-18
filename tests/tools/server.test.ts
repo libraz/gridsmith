@@ -81,12 +81,13 @@ const expectBlueGuides = (rgba: Uint8Array) => {
 const listing = async (dir: string): Promise<string[]> => (await readdir(dir)).sort();
 
 describe('tools/list', () => {
-  it('lists the three tools with their annotations', async () => {
+  it('lists the four tools with their annotations', async () => {
     const { tools } = await client.listTools();
     const byName = new Map(tools.map((t) => [t.name, t]));
     expect([...byName.keys()].sort()).toEqual([
       'gridsmith_export',
       'gridsmith_guide',
+      'gridsmith_import',
       'gridsmith_render',
     ]);
     expect(byName.get('gridsmith_guide')?.annotations).toEqual({
@@ -94,6 +95,10 @@ describe('tools/list', () => {
       openWorldHint: false,
     });
     expect(byName.get('gridsmith_render')?.annotations).toEqual({
+      readOnlyHint: true,
+      openWorldHint: false,
+    });
+    expect(byName.get('gridsmith_import')?.annotations).toEqual({
       readOnlyHint: true,
       openWorldHint: false,
     });
@@ -121,6 +126,7 @@ describe('tools/list', () => {
     expect(keys('gridsmith_guide')).toEqual(['topic']);
     expect(keys('gridsmith_render')).toEqual(['spec', 'underlay', 'views']);
     expect(keys('gridsmith_export')).toEqual(['dir', 'name', 'overwrite', 'spec']);
+    expect(keys('gridsmith_import')).toEqual(['segments', 'snap']);
     for (const tool of tools) {
       expect(tool.inputSchema.required ?? []).toEqual([]);
     }
@@ -128,10 +134,11 @@ describe('tools/list', () => {
 
   it('sends the server instructions', () => {
     const instructions = client.getInstructions() ?? '';
-    expect(instructions.split(/(?<=\.)\s+/)).toHaveLength(3);
+    expect(instructions.split(/(?<=\.)\s+/)).toHaveLength(4);
     expect(instructions).toContain('gridsmith_guide');
     expect(instructions).toContain('gridsmith_render');
     expect(instructions).toContain('gridsmith_export');
+    expect(instructions).toContain('gridsmith_import');
   });
 });
 
@@ -942,5 +949,221 @@ describe('gridsmith_export', () => {
     await call('gridsmith_export', { spec: example('crescent'), dir: workDir, name: 'logo' });
     await call('gridsmith_export', { spec: example('crescent'), dir: workDir, name: 'logo' });
     expect((await listing(workDir)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+});
+
+describe('icon mode through the tools', () => {
+  const ICON = {
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    concept: 'Line chart: two axes and a rising zigzag with evenly spaced points',
+    shapes: [
+      {
+        id: 'plate',
+        type: 'rect',
+        corners: [
+          [-11, -11],
+          [11, 11],
+        ],
+        r: 3,
+      },
+      {
+        id: 'axis',
+        type: 'polyline',
+        through: [
+          [-7, 7],
+          [-7, -7],
+          [7, -7],
+        ],
+      },
+      { id: 'p1', type: 'point', at: [-4, -3] },
+      { id: 'p2', type: 'point', at: [0, 1] },
+      { id: 'p3', type: 'point', at: [4, -1] },
+      { id: 'p4', type: 'point', at: [8, 5] },
+      { id: 'trend', type: 'polyline', through: ['p1', 'p2', 'p3', 'p4'] },
+      { id: 'dot', type: 'circle', center: 'p4', r: 1.5 },
+    ],
+    paint: [
+      { fill: 'plate', color: '#f3f2f1' },
+      { stroke: ['axis'], width: 1, color: '#8a8f98', join: 'miter', cap: 'butt' },
+      { stroke: ['trend'], width: 1.5, color: '#107c41' },
+      { fill: 'dot', color: '#107c41' },
+    ],
+  };
+  const ICON_FILES = [
+    'chart-16.png',
+    'chart-24.png',
+    'chart-48.png',
+    'chart-512.png',
+    'chart-guides.svg',
+    'chart-sheet.svg',
+    'chart.segments.json',
+    'chart.spec.json',
+    'chart.svg',
+  ];
+
+  type Segments = { canvas: number; segments: Record<string, unknown>[] };
+
+  it('returns the sheet and a 336x192 pixel preview by default', async () => {
+    const result = await call('gridsmith_render', { spec: ICON });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const report = jsonOf(result) as { summary: string; violations: unknown[] };
+    expect(report.summary.startsWith('Icon ')).toBe(true);
+    expect(report.violations).toEqual([]);
+    const images = imagesOf(result).map((i) => readPng(i.bytes));
+    expect(images).toHaveLength(2);
+    expect([images[1]?.width, images[1]?.height]).toEqual([336, 192]);
+  });
+
+  it('reports rect, oval and polyline geometry and stats in paint order', async () => {
+    const spec = {
+      ...ICON,
+      shapes: [...ICON.shapes, { id: 'egg', type: 'oval', center: [0, 8], rx: 3, ry: 2 }],
+      paint: [...ICON.paint, { stroke: ['egg'], width: 1, color: '#000000' }],
+    };
+    const report = jsonOf(await call('gridsmith_render', { spec, views: ['svg'] })) as {
+      geometry: Record<string, unknown>[];
+      stats: Record<string, unknown>[];
+    };
+    const byId = (id: string) => report.geometry.find((g) => g.id === id);
+    expect(byId('plate')).toMatchObject({
+      id: 'plate',
+      type: 'rect',
+      min: [-11, -11],
+      max: [11, 11],
+      r: 3,
+    });
+    expect((byId('plate')?.area as number) - (484 - (4 - Math.PI) * 9)).toBeCloseTo(0, 3);
+    expect(byId('axis')).toEqual({
+      id: 'axis',
+      type: 'polyline',
+      vertices: [
+        [-7, 7],
+        [-7, -7],
+        [7, -7],
+      ],
+    });
+    expect(Object.keys(byId('egg') ?? {})).toEqual([
+      'id',
+      'type',
+      'cx',
+      'cy',
+      'rx',
+      'ry',
+      'rotate',
+      'end',
+      'side',
+      'area',
+    ]);
+    expect(report.stats.map((s) => s.paint)).toEqual([0, 1, 2, 3, 4]);
+    expect(report.stats[0]).toHaveProperty('loops', 1);
+    expect(report.stats[1]).toEqual({ paint: 1, strokes: 1 });
+  });
+
+  it('returns the segments view as a JSON string that matches the export', async () => {
+    const result = await call('gridsmith_render', { spec: ICON, views: ['segments'] });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    const set = JSON.parse(result.content[1]?.text ?? '') as Segments;
+    expect(set.canvas).toBe(24);
+    expect(set.segments).toHaveLength(4);
+    expect(set.segments[1]).toMatchObject({
+      stroke: '#8a8f98',
+      strokeWidth: 1,
+      strokeLinecap: 'butt',
+      strokeLinejoin: 'miter',
+    });
+    await call('gridsmith_export', { spec: ICON, dir: workDir, name: 'chart' });
+    const written = JSON.parse(await readFile(join(workDir, 'chart.segments.json'), 'utf8'));
+    expect(written).toEqual(set);
+  });
+
+  it('leaves out segments over 60000 characters and says so in truncated', async () => {
+    const wiggle = (k: number) =>
+      Array.from({ length: 32 }, (_, i) => [
+        Number((-10 + i * 0.6 + k * 0.0001).toFixed(4)),
+        i % 2 === 0 ? 1.1234 + k : -1.1234 - k,
+      ]);
+    const spec = {
+      version: 1,
+      mode: 'icon',
+      grid: { divisions: 12 },
+      shapes: Array.from({ length: 8 }, (_, k) => ({
+        id: `w${k}`,
+        type: 'polyline',
+        through: wiggle(k),
+      })),
+      paint: Array.from({ length: 16 }, (_, k) => ({
+        stroke: Array.from({ length: 8 }, (_, j) => `w${j}`),
+        width: 1,
+        color: `#${(k + 16).toString(16)}0000`,
+      })),
+    };
+    const result = await call('gridsmith_render', { spec, views: ['segments'] });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    expect(result.content).toHaveLength(1);
+    expect((jsonOf(result) as { truncated: string[] }).truncated).toContain(
+      'segments: too large, use gridsmith_export',
+    );
+  });
+
+  it('refuses the segments view for a mark', async () => {
+    const result = await call('gridsmith_render', {
+      spec: example('crescent'),
+      views: ['segments'],
+    });
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('views[0]: view is not available for a mark');
+    expect(textOf(result)).toContain('"segments" only when mode is "icon"');
+  });
+
+  it('writes the icon file set', async () => {
+    const result = await call('gridsmith_export', { spec: ICON, dir: workDir, name: 'chart' });
+    expect(result.isError, textOf(result)).toBeFalsy();
+    expect(await listing(workDir)).toEqual(ICON_FILES);
+    expect(await readFile(join(workDir, 'chart.svg'), 'utf8')).toContain('viewBox="0 0 24 24"');
+    const small = readPng(await readFile(join(workDir, 'chart-16.png')));
+    expect([small.width, small.height]).toEqual([16, 16]);
+    const big = readPng(await readFile(join(workDir, 'chart-512.png')));
+    expect([big.width, big.height]).toEqual([512, 512]);
+  });
+
+  it('serves the icon topic and keeps the other topics within budget', async () => {
+    const icon = jsonOf(await call('gridsmith_guide', { topic: 'icon' }));
+    expect(icon.topic).toBe('icon');
+    const text = String(icon.text);
+    expect(text.length).toBeLessThanOrEqual(5000);
+    const order = [
+      'COORDINATES',
+      'CANVAS AND GRID',
+      'LAYERS',
+      'ELEMENTS',
+      'STROKE STYLE',
+      'RULES',
+      'CHECKING AND EXPORT',
+      'EXAMPLE',
+    ].map((heading) => text.indexOf(heading));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect(text.indexOf("x = x' - 12")).toBeLessThan(text.indexOf('CANVAS AND GRID'));
+
+    const overview = String(jsonOf(await call('gridsmith_guide', { topic: 'overview' })).text);
+    expect(overview.length).toBeLessThanOrEqual(8000);
+    expect(overview).toContain(
+      '- "icon": a 24-unit UI icon (grid.divisions 12) that mixes fill and stroke layers; read topic "icon" before writing one.',
+    );
+
+    const spec = jsonOf(await call('gridsmith_guide', { topic: 'spec' })) as {
+      schema: { $defs: Record<string, unknown> };
+      elements: Record<string, string>;
+      layers: Record<string, string>;
+    };
+    expect(Object.keys(spec.schema.$defs).sort()).toEqual(['Point', 'Region']);
+    for (const key of ['polyline', 'rect', 'oval']) {
+      expect(spec.elements[key]).toBeDefined();
+    }
+    for (const key of ['cap', 'join', 'dash']) {
+      expect(spec.layers[key]).toBeDefined();
+    }
   });
 });

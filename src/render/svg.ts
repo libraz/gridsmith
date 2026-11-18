@@ -1,7 +1,14 @@
 import type { ArcEdge, FillResult, Loop } from '../geom/arrangement.js';
 import type { ChainPiece } from '../geom/chain.js';
 import type { Vec } from '../geom/primitives.js';
-import type { EraseShape, ResolvedErase, ResolvedModel, StrokeItem } from '../resolve/resolve.js';
+import type {
+  EraseShape,
+  ResolvedErase,
+  ResolvedModel,
+  ResolvedStroke,
+  StrokeItem,
+} from '../resolve/resolve.js';
+import { renderSegments, segmentPaths } from './segments.js';
 
 /** Largest sweep of one emitted arc, in radians. */
 const MAX_ARC_SWEEP = (2 * Math.PI) / 3;
@@ -100,10 +107,11 @@ export function chainPathData(
   return out.join(' ');
 }
 
-const STROKE_ATTRS = 'fill="none" stroke-linejoin="round" stroke-linecap="round"';
-
-function strokeItemMarkup(item: StrokeItem, width: number, color: string): string[] {
-  const style = `${STROKE_ATTRS} stroke="${color}" stroke-width="${num(width)}"`;
+// Every element starts where, and runs the way, the icon's segment path does, so dashes line up.
+function strokeItemMarkup(item: StrokeItem, layer: ResolvedStroke): string[] {
+  const dash =
+    layer.dash === null ? '' : ` stroke-dasharray="${num(layer.dash[0])} ${num(layer.dash[1])}"`;
+  const style = `fill="none" stroke-linejoin="${layer.join}" stroke-linecap="${layer.cap}" stroke="${layer.color}" stroke-width="${num(layer.width)}"${dash}`;
   switch (item.kind) {
     case 'circle':
       return [
@@ -126,6 +134,8 @@ function strokeItemMarkup(item: StrokeItem, width: number, color: string): strin
       return item.loops.map((loop) => `<polygon points="${loop.map(pt).join(' ')}" ${style}/>`);
     case 'chain':
       return [`<path d="${chainPathData(item.pieces)}" ${style}/>`];
+    case 'polyline':
+      return [`<polyline points="${item.points.map(pt).join(' ')}" ${style}/>`];
   }
 }
 
@@ -166,6 +176,9 @@ export type FinalMarkupOptions = {
 /**
  * Body of the final drawing in SVG coordinates (y down, origin at the canvas centre).
  * An erase layer wraps everything drawn before it in a masked group.
+ * An icon is the exception: its segment paths, in the 0..canvas frame with the origin at the
+ * top-left corner, so a caller placing it in a centred frame translates by minus `canvasHalf`.
+ * Options do not apply to an icon.
  */
 export function finalMarkup(
   model: ResolvedModel,
@@ -173,6 +186,9 @@ export function finalMarkup(
   options: FinalMarkupOptions = {},
 ): string {
   const { fillOpacity = 1, idPrefix = '' } = options;
+  if (model.mode === 'icon') {
+    return segmentPaths(renderSegments(model, fills));
+  }
   if (model.mode === 'mark') {
     return model.fills
       .flatMap((layer, i) => {
@@ -193,8 +209,9 @@ export function finalMarkup(
   let body = '';
   for (const layer of layers) {
     if ('stroke' in layer) {
-      const { items, width, color } = layer.stroke;
-      const markup = items.flatMap((item) => strokeItemMarkup(item, width, color)).join('\n');
+      const markup = layer.stroke.items
+        .flatMap((item) => strokeItemMarkup(item, layer.stroke))
+        .join('\n');
       body = body === '' ? markup : `${body}\n${markup}`;
     } else {
       const id = `${idPrefix}erase-${layer.index}`;
@@ -205,12 +222,16 @@ export function finalMarkup(
   return defs.length === 0 ? body : `<defs>\n${defs.join('\n')}\n</defs>\n${body}`;
 }
 
-/** The final drawing as a standalone SVG: viewBox is the canvas, background transparent. */
+/**
+ * The final drawing as a standalone SVG: viewBox is the canvas, background transparent.
+ * An icon's viewBox starts at 0 0, the frame of its segments.
+ */
 export function renderFinalSvg(model: ResolvedModel, fills: readonly FillResult[]): string {
   const h = model.canvasHalf;
   const side = num(2 * h);
+  const origin = model.mode === 'icon' ? '0 0' : `${num(-h)} ${num(-h)}`;
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${num(-h)} ${num(-h)} ${side} ${side}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${origin} ${side} ${side}">`,
     finalMarkup(model, fills),
     '</svg>',
   ].join('\n');

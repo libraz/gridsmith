@@ -46,6 +46,7 @@ const JOINT_MARK_SIZE = 4;
 const COPY_OPACITY = 0.4;
 const MARK_FILL_OPACITY = 0.15;
 const FIGURE_TINT_OPACITY = 0.25;
+const ICON_TINT_OPACITY = 0.35;
 const TAG_BEARING_START = 45;
 const TAG_BEARING_STEP = 47;
 const POINT_RADIUS = 3;
@@ -124,17 +125,29 @@ function wrap(s: string, maxWidth: number, maxLines: number): string[] {
 
 type PanelLine = { text: string; kind: 'heading' | 'body' | 'warn' };
 
+const tidy = (x: number): string => String(Number(x.toFixed(4)));
+
 function legendRow(el: ResolvedElement): string {
   switch (el.type) {
     case 'circle':
     case 'tangent_circle': {
-      const value = String(Number(el.circle.r.toFixed(4)));
+      const value = tidy(el.circle.r);
       const radius = el.label === value ? value : `${el.label} = ${value}`;
       return `${el.id}  ${el.type}  r = ${radius}`;
     }
     case 'outline': {
       const corners = el.joints.filter((j) => j.kind === 'corner').length;
       return `${el.id}  outline  ${el.pieces.length} pieces, ${corners} ${corners === 1 ? 'corner' : 'corners'}`;
+    }
+    case 'rect': {
+      const [w, h] = [el.max.x - el.min.x, el.max.y - el.min.y].map(tidy);
+      return `${el.id}  rect  ${w} × ${h}${el.r > 0 ? `, r = ${tidy(el.r)}` : ''}`;
+    }
+    case 'oval':
+      return `${el.id}  oval  rx = ${tidy(el.rx)}, ry = ${tidy(el.ry)}, end ${tidy(el.end)}, side ${tidy(el.side)}`;
+    case 'polyline': {
+      const n = el.vertices.length;
+      return `${el.id}  polyline  ${n} ${n === 1 ? 'point' : 'points'}`;
     }
     case 'repeat':
       return `${el.id}  repeat  ${el.copyCount} placements`;
@@ -270,7 +283,7 @@ function clipSegment(from: Vec, to: Vec, half: number): [Vec, Vec] | null {
 }
 
 function helperMarkup(
-  el: RepeatElement | Extract<ResolvedElement, { type: 'tangent_circle' }>,
+  el: RepeatElement | Extract<ResolvedElement, { type: 'tangent_circle' | 'rect' | 'oval' }>,
   f: Frame,
   centre: boolean,
   extra: string,
@@ -325,11 +338,46 @@ function helperMarkup(
         `<path d="${d}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * OUTLINE_WIDTH_FACTOR)}"${extra}/>`,
       ];
     }
+    case 'polyline':
+      return [
+        `<polyline points="${el.vertices.map((p) => `${num(sx(f, p.x))} ${num(sy(f, p.y))}`).join(' ')}" ${stroke}/>`,
+        ...el.vertices.map(
+          (p) =>
+            `<circle cx="${num(sx(f, p.x))}" cy="${num(sy(f, p.y))}" r="${CENTER_RADIUS}" fill="${HELPER_COLOR}"${extra}/>`,
+        ),
+      ];
+    case 'rect': {
+      const d = chainPathData(el.pieces, (p) => ({ x: sx(f, p.x), y: sy(f, p.y) }), f.scale);
+      const out = [
+        `<path d="${d}" fill="none" stroke="${HELPER_COLOR}" stroke-width="${num(f.line * OUTLINE_WIDTH_FACTOR)}"${extra}/>`,
+      ];
+      if (centre) {
+        for (const piece of el.pieces) {
+          if (piece.kind === 'arc') {
+            out.push(
+              `<circle cx="${num(sx(f, piece.circle.cx))}" cy="${num(sy(f, piece.circle.cy))}" r="${CENTER_RADIUS}" fill="${HELPER_COLOR}"${extra}/>`,
+            );
+          }
+        }
+      }
+      return out;
+    }
+    case 'oval':
+      return el.pieces.flatMap((piece) =>
+        piece.kind === 'arc'
+          ? [
+              `<circle cx="${num(sx(f, piece.circle.cx))}" cy="${num(sy(f, piece.circle.cy))}" r="${num(piece.circle.r * f.scale)}" ${stroke}/>`,
+            ]
+          : [],
+      );
   }
 }
 
 /** One marker per joint: a small circle where the outline is smooth, a small square at a corner. */
-function jointMarkup(el: Extract<ResolvedElement, { type: 'outline' }>, f: Frame): string[] {
+function jointMarkup(
+  el: Extract<ResolvedElement, { type: 'outline' | 'oval' }>,
+  f: Frame,
+): string[] {
   return el.joints.map((j) => {
     const x = sx(f, j.at.x);
     const y = sy(f, j.at.y);
@@ -359,7 +407,11 @@ function anchorOf(el: ResolvedElement | RepeatElement, f: Frame, bearing: number
     case 'points':
       return el.vertices[0] ?? null;
     case 'outline':
+    case 'rect':
+    case 'oval':
       return el.pieces[0]?.start ?? null;
+    case 'polyline':
+      return el.vertices[0] ?? null;
     case 'repeat': {
       const first = el.copies[0];
       return first === undefined ? null : anchorOf(first.element, f, bearing);
@@ -402,7 +454,7 @@ function constructionMarkup(model: ResolvedModel, f: Frame): { helpers: string[]
       helpers.push(`<g data-id="${id}" data-kind="repeat">${inner.join('')}</g>`);
     } else {
       inner.push(...helperMarkup(el, f, true, ''));
-      if (el.type === 'outline') {
+      if (el.type === 'outline' || el.type === 'oval') {
         inner.push(...jointMarkup(el, f));
       }
       helpers.push(`<g data-id="${id}">${inner.join('')}</g>`);
@@ -431,6 +483,12 @@ const frameOf = (model: ResolvedModel, line = HELPER_WIDTH): Frame => ({
   line,
 });
 
+/** An icon's markup is in the 0..canvas frame; the sheet and guides draw around the centre. */
+const placedFinal = (model: ResolvedModel, markup: string): string =>
+  model.mode === 'icon'
+    ? `<g transform="translate(${num(-model.canvasHalf)} ${num(-model.canvasHalf)})">\n${markup}\n</g>`
+    : markup;
+
 const drawingGroup = (f: Frame, body: string): string =>
   `<g transform="translate(${DRAWING_SIZE / 2} ${DRAWING_SIZE / 2}) scale(${num(f.scale)})">\n${body}\n</g>`;
 
@@ -442,7 +500,7 @@ export function renderGuidesSvg(model: ResolvedModel, fills: readonly FillResult
   const f = frameOf(model, GUIDE_WIDTH);
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${DRAWING_SIZE} ${DRAWING_SIZE}">`,
-    drawingGroup(f, finalMarkup(model, fills)),
+    drawingGroup(f, placedFinal(model, finalMarkup(model, fills))),
     ...constructionMarkup(model, f).helpers,
     '</svg>',
   ].join('\n');
@@ -461,14 +519,17 @@ export function renderSheetSvg(input: SheetInput): SheetOutput {
     fillOpacity: MARK_FILL_OPACITY,
     idPrefix: 'area-',
   });
+  const tintOpacity = model.mode === 'icon' ? ICON_TINT_OPACITY : FIGURE_TINT_OPACITY;
   const finalInSheet = drawingGroup(
     f,
-    model.mode === 'mark' ? tinted : `<g opacity="${FIGURE_TINT_OPACITY}">\n${tinted}\n</g>`,
+    model.mode === 'mark'
+      ? tinted
+      : `<g opacity="${tintOpacity}">\n${placedFinal(model, tinted)}\n</g>`,
   );
 
   const boxScale = BOX_SIZE / (2 * model.canvasHalf);
   const boxTop = DRAWING_SIZE + PANEL_PAD;
-  const boxMark = `<g transform="translate(${BOX_LEFT + BOX_SIZE / 2} ${boxTop + BOX_SIZE / 2}) scale(${num(boxScale)})">\n${finalMarkup(model, fills, { idPrefix: 'box-' })}\n</g>`;
+  const boxMark = `<g transform="translate(${BOX_LEFT + BOX_SIZE / 2} ${boxTop + BOX_SIZE / 2}) scale(${num(boxScale)})">\n${placedFinal(model, finalMarkup(model, fills, { idPrefix: 'box-' }))}\n</g>`;
 
   const { helpers, tags } = constructionMarkup(model, f);
 

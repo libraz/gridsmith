@@ -1494,3 +1494,520 @@ describe('outline element resolution', () => {
     });
   });
 });
+
+describe('icon mode resolution', () => {
+  const icon = (shapes: ShapeInput[], paint: unknown[]): SpecInput =>
+    build(shapes, paint, { mode: 'icon', grid: { divisions: 12 } });
+  const stroked = (shapes: ShapeInput[], extra: Record<string, unknown> = {}): SpecInput =>
+    icon(shapes, [{ stroke: [shapes[shapes.length - 1]?.id], width: 1, ...extra }]);
+  const rect = (id: string, corners: [number, number][], r?: number): ShapeInput => ({
+    id,
+    type: 'rect',
+    corners,
+    ...(r === undefined ? {} : { r }),
+  });
+  const oval = (id: string, rx: number, ry: number, more: ShapeInput = {}): ShapeInput => ({
+    id,
+    type: 'oval',
+    center: [0, 0],
+    rx,
+    ry,
+    ...more,
+  });
+  const polyline = (id: string, through: unknown[]): ShapeInput => ({
+    id,
+    type: 'polyline',
+    through,
+  });
+  const messages = (input: SpecInput): string[] => failure(input).map((e) => e.message);
+
+  it('keeps fill and stroke layers in paint order', () => {
+    const m = model(
+      icon(
+        [
+          rect('plate', [
+            [-11, -11],
+            [11, 11],
+          ]),
+          polyline('trend', [
+            [-4, -3],
+            [0, 1],
+            [4, -1],
+          ]),
+          circle('dot', 4, -1, 1.5),
+        ],
+        [
+          { fill: 'plate', color: '#f3f2f1' },
+          { stroke: ['trend'], width: 1.5, color: '#107c41' },
+          { fill: 'dot', color: '#107c41' },
+        ],
+      ),
+    );
+    expect(m.mode).toBe('icon');
+    expect(m.canvasHalf).toBe(12);
+    expect(m.margin).toBe(0);
+    expect(m.fills.map((f) => f.index)).toEqual([0, 2]);
+    expect(m.strokes.map((s) => s.index)).toEqual([1]);
+    expect(m.erases).toEqual([]);
+    expect(m.fills[0]?.region).toMatchObject({ kind: 'chain', source: { id: 'plate', copy: 0 } });
+    expect(m.fills[1]?.region.kind).toBe('disc');
+  });
+
+  it('resolves a polyline to its vertices in order and strokes it as points', () => {
+    const m = model(
+      icon(
+        [{ id: 'p', type: 'point', at: [0, 1] }, polyline('z', [[-4, -3], 'p', [4, -1], [8, 5]])],
+        [{ stroke: ['z'], width: 1 }],
+      ),
+    );
+    const z = get(m, 'z', 'polyline');
+    expect(z.vertices).toEqual([
+      { x: -4, y: -3 },
+      { x: 0, y: 1 },
+      { x: 4, y: -1 },
+      { x: 8, y: 5 },
+    ]);
+    expect(m.strokes[0]?.items).toEqual([
+      { id: 'z', copy: 0, via: 'z', kind: 'polyline', points: z.vertices },
+    ]);
+  });
+
+  it('resolves a sharp rect from either pair of opposite corners', () => {
+    const m = model(
+      stroked([
+        rect('s', [
+          [3, -2],
+          [-1, 4],
+        ]),
+      ]),
+    );
+    const s = get(m, 's', 'rect');
+    expect(s.min).toEqual({ x: -1, y: -2 });
+    expect(s.max).toEqual({ x: 3, y: 4 });
+    expect(s.r).toBe(0);
+    expect(s.pieces.map((p) => p.kind)).toEqual(['line', 'line', 'line', 'line']);
+    expect(s.joints.every((j) => j.kind === 'corner')).toBe(true);
+    expect(s.pieces[0]?.start).toEqual({ x: -1, y: -2 });
+    expect(s.pieces[0]?.end).toEqual({ x: 3, y: -2 });
+    expect(s.area).toBeCloseTo(24, 9);
+    expect(m.strokes[0]?.items[0]?.kind).toBe('chain');
+  });
+
+  it('resolves a rounded rect starting at the left end of the bottom line', () => {
+    const m = model(
+      stroked([
+        rect(
+          'r',
+          [
+            [-11, -7],
+            [11, 7],
+          ],
+          2,
+        ),
+      ]),
+    );
+    const r = get(m, 'r', 'rect');
+    expect(r.r).toBe(2);
+    expect(r.pieces.map((p) => p.kind)).toEqual([
+      'line',
+      'arc',
+      'line',
+      'arc',
+      'line',
+      'arc',
+      'line',
+      'arc',
+    ]);
+    expect(r.joints.every((j) => j.kind === 'tangent')).toBe(true);
+    expect(r.pieces[0]?.start).toEqual({ x: -9, y: -7 });
+    expect(r.area).toBeCloseTo(22 * 14 - (4 - Math.PI) * 4, 9);
+  });
+
+  it('resolves a pill when r is half the shorter side', () => {
+    const m = model(
+      stroked([
+        rect(
+          'pill',
+          [
+            [-4, -1],
+            [4, 1],
+          ],
+          1,
+        ),
+      ]),
+    );
+    const pill = get(m, 'pill', 'rect');
+    expect(pill.r).toBe(1);
+    expect(pill.pieces.map((p) => p.kind)).toEqual(['line', 'arc', 'line', 'arc']);
+    for (const p of pill.pieces) {
+      if (p.kind === 'arc') {
+        expect(p.sweep).toBeCloseTo(Math.PI, 12);
+      }
+    }
+    expect(pill.area).toBeCloseTo(8 * 2 - (4 - Math.PI), 9);
+  });
+
+  it('resolves an oval with its arc radii and degrees of rotation', () => {
+    const m = model(stroked([oval('o', 6, 4)]));
+    const o = get(m, 'o', 'oval');
+    const d = Math.hypot(6, 4);
+    expect(o.center).toEqual({ x: 0, y: 0 });
+    expect([o.rx, o.ry, o.rotate]).toEqual([6, 4, 0]);
+    expect(o.end).toBeCloseTo((d * (d - 2)) / 12, 12);
+    expect(o.side).toBeCloseTo((d * (d + 2)) / 8, 12);
+    expect(o.pieces.map((p) => p.kind)).toEqual(['arc', 'arc', 'arc', 'arc']);
+    expect(o.joints.every((j) => j.kind === 'tangent')).toBe(true);
+    const first = o.pieces[0];
+    if (first?.kind !== 'arc') {
+      throw new Error('expected an arc');
+    }
+    // The first arc is the right end arc, starting at its lower joint.
+    expect(first.circle.cx).toBeCloseTo(6 - o.end, 12);
+    expect(first.circle.cy).toBeCloseTo(0, 12);
+    expect(first.start.y).toBeLessThan(0);
+    expect(o.area).toBeGreaterThan(0);
+    expect(m.strokes[0]?.items[0]?.kind).toBe('chain');
+  });
+
+  it('turns an oval counter-clockwise by rotate degrees', () => {
+    const m = model(stroked([oval('o', 6, 4, { center: [1, 2], rotate: 90 })]));
+    const o = get(m, 'o', 'oval');
+    expect(o.rotate).toBe(90);
+    const first = o.pieces[0];
+    if (first?.kind !== 'arc') {
+      throw new Error('expected an arc');
+    }
+    expect(first.circle.cx).toBeCloseTo(1, 12);
+    expect(first.circle.cy).toBeCloseTo(2 + 6 - o.end, 12);
+    expect(first.circle.r).toBeCloseTo(o.end, 12);
+  });
+
+  it('starts a taller oval at its top end arc', () => {
+    const o = get(model(stroked([oval('o', 4, 6)])), 'o', 'oval');
+    const first = o.pieces[0];
+    if (first?.kind !== 'arc') {
+      throw new Error('expected an arc');
+    }
+    expect(first.circle.cx).toBeCloseTo(0, 12);
+    expect(first.circle.cy).toBeCloseTo(6 - o.end, 12);
+  });
+
+  it('rejects a polyline segment of zero length', () => {
+    const [message] = messages(
+      stroked([
+        polyline('z', [
+          [0, 0],
+          [1, 1],
+          [1, 1],
+        ]),
+      ]),
+    );
+    expect(message).toContain('polyline segment has no length');
+    expect(message).toContain('through[1] (1, 1) and through[2] (1, 1)');
+  });
+
+  it('rejects a rect narrower or lower than 0.05', () => {
+    const [message] = messages(
+      stroked([
+        rect('s', [
+          [0, 0],
+          [0.04, 2],
+        ]),
+      ]),
+    );
+    expect(message).toContain('rect is too small (received: width 0.04, height 2');
+    expect(
+      messages(
+        stroked([
+          rect('s', [
+            [0, 0],
+            [2, 0.04],
+          ]),
+        ]),
+      )[0],
+    ).toContain('rect is too small');
+  });
+
+  it('rejects a corner radius above half the shorter side', () => {
+    const [message] = messages(
+      stroked([
+        rect(
+          's',
+          [
+            [-4, -1],
+            [4, 1],
+          ],
+          1.000001,
+        ),
+      ]),
+    );
+    expect(message).toContain('rect corner radius is too large');
+    expect(message).toContain('allowed: up to 1,');
+  });
+
+  it('accepts a corner radius within 1e-9 above half the shorter side as a pill', () => {
+    const pill = get(
+      model(
+        stroked([
+          rect(
+            'pill',
+            [
+              [-4, -1],
+              [4, 1],
+            ],
+            1 + 5e-10,
+          ),
+        ]),
+      ),
+      'pill',
+      'rect',
+    );
+    expect(pill.pieces).toHaveLength(4);
+  });
+
+  it('rejects a square whose corner radius is half its side, suggesting a circle', () => {
+    const [message] = messages(
+      stroked([
+        rect(
+          's',
+          [
+            [-2, -2],
+            [2, 2],
+          ],
+          2,
+        ),
+      ]),
+    );
+    expect(message).toContain('rect is a circle');
+    expect(message).toContain('Use a circle');
+  });
+
+  it('rejects an oval whose radii differ by less than 0.05, suggesting a circle', () => {
+    const [message] = messages(stroked([oval('o', 3, 2.96)]));
+    expect(message).toContain('oval is a circle');
+    expect(message).toContain('Use a circle');
+    expect(model(stroked([oval('o', 3, 2.9)])).byId.has('o')).toBe(true);
+  });
+
+  it('rejects an oval more elongated than 4 to 1', () => {
+    const [message] = messages(stroked([oval('o', 2, 8.5)]));
+    expect(message).toContain('oval is too elongated');
+    expect(message).toContain('ratio 4.25');
+    expect(model(stroked([oval('o', 2, 8)])).byId.has('o')).toBe(true);
+  });
+
+  it('copies a rect and an oval as outlines', () => {
+    const m = model(
+      stroked([
+        rect(
+          's',
+          [
+            [2, -1],
+            [6, 1],
+          ],
+          0.5,
+        ),
+        oval('o', 2, 1, { center: [0, 4] }),
+        { id: 'rep', type: 'repeat', of: ['s', 'o'], n: 4 },
+      ]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    const s = get(m, 's', 'rect');
+    expect(rep.copies).toHaveLength(6);
+    for (const c of rep.copies) {
+      expect(c.element.type).toBe('outline');
+      expect(Object.keys(c.element).sort()).toEqual(['area', 'id', 'joints', 'pieces', 'type']);
+    }
+    const quarter = rep.copies.find((c) => c.of === 's' && c.copy === 1)?.element;
+    if (quarter?.type !== 'outline') {
+      throw new Error('expected an outline');
+    }
+    expect(quarter.area).toBeCloseTo(s.area, 9);
+    expect(quarter.pieces[0]?.start.x).toBeCloseTo(1, 9);
+    expect(quarter.pieces[0]?.start.y).toBeCloseTo(2.5, 9);
+    const items = m.strokes[0]?.items ?? [];
+    expect(items.map((i) => `${i.id}:${i.copy}:${i.kind}`)).toEqual([
+      's:0:chain',
+      's:1:chain',
+      's:2:chain',
+      's:3:chain',
+      'o:0:chain',
+      'o:1:chain',
+      'o:2:chain',
+      'o:3:chain',
+    ]);
+  });
+
+  it('drops a rect copy that lands on the original', () => {
+    const rep = get(
+      model(
+        stroked([
+          rect(
+            's',
+            [
+              [-2, -2],
+              [2, 2],
+            ],
+            1,
+          ),
+          { id: 'rep', type: 'repeat', of: ['s'], n: 4, mirror: true },
+        ]),
+      ),
+      'rep',
+      'repeat',
+    );
+    expect(rep.copies).toHaveLength(0);
+    expect(rep.copyCount).toBe(1);
+  });
+
+  it('copies a polyline vertex by vertex and compares vertices in order', () => {
+    const m = model(
+      stroked([
+        polyline('z', [
+          [1, 0],
+          [2, 1],
+          [3, 0],
+        ]),
+        { id: 'rep', type: 'repeat', of: ['z'], n: 4 },
+      ]),
+    );
+    const rep = get(m, 'rep', 'repeat');
+    expect(rep.copies).toHaveLength(3);
+    const first = rep.copies[0]?.element;
+    if (first?.type !== 'polyline') {
+      throw new Error('expected a polyline');
+    }
+    expect(first.vertices[0]?.x).toBeCloseTo(0, 9);
+    expect(first.vertices[0]?.y).toBeCloseTo(1, 9);
+    expect(first.vertices[1]?.x).toBeCloseTo(-1, 9);
+    expect(first.vertices[1]?.y).toBeCloseTo(2, 9);
+    expect(m.strokes[0]?.items.map((i) => i.kind)).toEqual([
+      'polyline',
+      'polyline',
+      'polyline',
+      'polyline',
+    ]);
+
+    // A mirror of a symmetric polyline lists the vertices in reverse, so it is a separate copy.
+    const mirrored = get(
+      model(
+        stroked([
+          polyline('v', [
+            [-1, 1],
+            [0, 2],
+            [1, 1],
+          ]),
+          { id: 'rep', type: 'repeat', of: ['v'], n: 1, mirror: true },
+        ]),
+      ),
+      'rep',
+      'repeat',
+    );
+    expect(mirrored.copyCount).toBe(2);
+    const copy = mirrored.copies[0]?.element;
+    if (copy?.type !== 'polyline') {
+      throw new Error('expected a polyline');
+    }
+    expect(copy.vertices.map((v) => [v.x, v.y].map((x) => Math.round(x * 1e9) / 1e9))).toEqual([
+      [1, 1],
+      [0, 2],
+      [-1, 1],
+    ]);
+  });
+
+  it('uses a rect and an oval as region leaves', () => {
+    const m = model(
+      icon(
+        [
+          circle('disc', 0, 0, 10),
+          rect(
+            'hole',
+            [
+              [-3, -2],
+              [3, 2],
+            ],
+            1,
+          ),
+          oval('egg', 2, 1, { center: [0, 6] }),
+        ],
+        [{ fill: { subtract: ['disc', 'hole', 'egg'] }, color: '#000000' }],
+      ),
+    );
+    const region = m.fills[0]?.region;
+    if (region === undefined) {
+      throw new Error('expected a fill');
+    }
+    expect(contains(region, { x: 0, y: 0 })).toBe(false);
+    expect(contains(region, { x: 0, y: 6 })).toBe(false);
+    expect(contains(region, { x: 0, y: -6 })).toBe(true);
+    expect(contains(region, { x: 4, y: 0 })).toBe(true);
+  });
+
+  it('erases with a rect and an oval in a figure', () => {
+    const m = model(
+      build(
+        [
+          circle('c', 0, 0, 3),
+          rect('s', [
+            [-1, -1],
+            [1, 1],
+          ]),
+          oval('o', 1, 0.5),
+        ],
+        [{ stroke: ['c'], width: 0.125 }, { erase: ['s', 'o'] }],
+      ),
+    );
+    const s = get(m, 's', 'rect');
+    expect(m.erases[0]?.shapes).toEqual([
+      { kind: 'chain', pieces: s.pieces },
+      { kind: 'chain', pieces: get(m, 'o', 'oval').pieces },
+    ]);
+  });
+
+  it('defaults a stroke to round caps, round joins and no dash', () => {
+    const [layer] = model(
+      stroked([
+        polyline('z', [
+          [0, 0],
+          [1, 1],
+          [2, 0],
+        ]),
+      ]),
+    ).strokes;
+    expect(layer?.cap).toBe('round');
+    expect(layer?.join).toBe('round');
+    expect(layer?.dash).toBeNull();
+  });
+
+  it('carries explicit cap, join and dash', () => {
+    const [layer] = model(
+      stroked(
+        [
+          polyline('z', [
+            [0, 0],
+            [1, 1],
+            [2, 0],
+          ]),
+        ],
+        { cap: 'butt', join: 'miter', dash: [2, 1] },
+      ),
+    ).strokes;
+    expect(layer?.cap).toBe('butt');
+    expect(layer?.join).toBe('miter');
+    expect(layer?.dash).toEqual([2, 1]);
+  });
+
+  it('carries cap, join and dash in a figure too', () => {
+    const m = model(
+      build(
+        [circle('c', 0, 0, 2)],
+        [{ stroke: ['c'], width: 0.125, cap: 'square', join: 'bevel', dash: [0.5, 0.25] }],
+      ),
+    );
+    expect(m.mode).toBe('figure');
+    const [layer] = m.strokes;
+    expect([layer?.cap, layer?.join, layer?.dash]).toEqual(['square', 'bevel', [0.5, 0.25]]);
+    const [plain] = model(build([circle('c', 0, 0, 2)])).strokes;
+    expect([plain?.cap, plain?.join, plain?.dash]).toEqual(['round', 'round', null]);
+  });
+});

@@ -1607,3 +1607,172 @@ describe('outline element through the tools', () => {
     expect(Object.keys(entry).sort()).toEqual(['area', 'corners', 'id', 'pieces', 'type']);
   });
 });
+
+describe('icon mode errors', () => {
+  const iconSpec = (extra: Obj = {}): Obj => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes: [
+      {
+        id: 'bar',
+        type: 'polyline',
+        through: [
+          [-4, 0],
+          [0, 2],
+          [4, 0],
+        ],
+      },
+    ],
+    paint: [{ stroke: ['bar'], width: 1, color: '#107c41' }],
+    ...extra,
+  });
+
+  it('segments view: a mark and a figure', async () => {
+    const mark = EXAMPLES.find((e) => e.spec.mode === 'mark')?.spec;
+    const figure = EXAMPLES.find((e) => e.spec.mode === 'figure')?.spec;
+    await rejected(
+      'gridsmith_render',
+      { spec: mark, views: ['segments'] },
+      'views[0]',
+      'view is not available for a mark',
+      '"segments" only when mode is "icon"',
+    );
+    await rejected(
+      'gridsmith_render',
+      { spec: figure, views: ['sheet', 'segments'] },
+      'views[1]',
+      'view is not available for a figure',
+      '"segments" only when mode is "icon"',
+    );
+  });
+
+  it('views: ten entries are rejected', async () => {
+    const all = ['sheet', 'final', 'sizes', 'svg', 'sheet_svg', 'guides', 'guides_svg', 'segments'];
+    await rejected(
+      'gridsmith_render',
+      { spec: iconSpec(), views: [...all, 'match', 'sheet'] },
+      'views',
+      'an array of 1 to 9 distinct values',
+    );
+  });
+
+  it('views: sizes is available for an icon and listed with segments', async () => {
+    const report = await accepted(iconSpec(), ['sizes', 'segments']);
+    expect(report.exportable).toBe(true);
+    await rejected(
+      'gridsmith_render',
+      { spec: iconSpec(), views: ['pixels'] },
+      'views[0]',
+      '"match", "segments"',
+    );
+  });
+
+  it('topic: lists icon', async () => {
+    await rejected('gridsmith_guide', { topic: 'x' }, 'topic', '"examples", "icon"');
+  });
+
+  it('mode, divisions and margin of an icon', async () => {
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec({ mode: 'ring' })),
+      'mode',
+      '"mark", "figure" or "icon"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec({ grid: { divisions: 8 } })),
+      'grid.divisions',
+      '12 when mode is "icon"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec({ grid: { divisions: 12, margin: 1 } })),
+      'grid.margin',
+      '0 or omitted when mode is "icon"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs({ ...fig(), grid: { divisions: 12 } }),
+      'grid.divisions',
+      '4, 6 or 8 unless mode is "icon"',
+    );
+  });
+
+  it('erase layers and a one-point polyline', async () => {
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec({ paint: [{ erase: ['bar'] }] })),
+      'paint[0]',
+      '"fill" or "stroke" layers when mode is "icon"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs(
+        iconSpec({
+          shapes: [
+            {
+              id: 'bar',
+              type: 'polyline',
+              through: [
+                [0, 0],
+                [1, 1],
+              ],
+            },
+          ],
+        }),
+      ),
+      'an array of 3 to 32 points',
+    );
+  });
+
+  it('stroke attributes: cap, join and dash', async () => {
+    const layer = (extra: Obj): Obj => ({
+      paint: [{ stroke: ['bar'], width: 1, color: '#107c41', ...extra }],
+    });
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec(layer({ cap: 'flat' }))),
+      'cap',
+      '"round", "butt" or "square"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec(layer({ join: null }))),
+      'join',
+      '"round", "miter" or "bevel"',
+    );
+    await rejected(
+      'gridsmith_render',
+      renderArgs(iconSpec(layer({ dash: [2] }))),
+      'dash',
+      'an array of 2 lengths: dash, gap',
+    );
+  });
+
+  it('draws an icon with violations and refuses to export it', async () => {
+    const spec = iconSpec({
+      shapes: [
+        {
+          id: 'bar',
+          type: 'polyline',
+          through: [
+            [-4, 0],
+            [-0.3, 2],
+            [4, 0],
+          ],
+        },
+      ],
+      paint: [{ stroke: ['bar'], width: 0.25, color: '#107c41' }],
+    });
+    const report = await accepted(spec, ['sizes']);
+    expect(violationRules(report)).toEqual(expect.arrayContaining(['off_grid', 'thin_stroke']));
+    await rejected(
+      'gridsmith_export',
+      { spec, dir: workDir, name: 'bad' },
+      'violation(s)',
+      'Nothing was written',
+    );
+    expect(await readdir(workDir)).toEqual([]);
+  });
+});

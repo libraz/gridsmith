@@ -30,60 +30,77 @@ export const RULES = {
   circle_count: {
     description:
       'At most 8 circles (circle and tangent_circle) in a mark and 16 in a figure, counted as declared, ' +
-      'before repeat expansion; arcs are not circles. A mark with an outline that a fill reaches may have 40. ' +
+      'before repeat expansion; arcs are not circles. A mark with an outline that a fill reaches may have 40, ' +
+      'and an icon 40. ' +
       'Target: "spec".',
-    modes: ['mark', 'figure'],
-    maxCircles: { mark: 8, mark_outline: 40, figure: 16 },
+    modes: ['mark', 'figure', 'icon'],
+    maxCircles: { mark: 8, mark_outline: 40, figure: 16, icon: 40 },
   },
   off_grid: {
     description:
-      'Numeric point coordinates and numeric radii must be multiples of 0.5 module in a mark and 0.25 module ' +
-      'in a figure. Length expressions, references, widths and anything inside near/toward are exempt. ' +
-      'Target: the element id.',
-    modes: ['mark', 'figure'],
-    gridStep: { mark: 0.5, figure: 0.25 },
+      'Numeric point coordinates and numeric lengths (radii, rect.r, oval rx and ry) must be multiples of 0.5 module ' +
+      'in a mark and an icon and 0.25 module in a figure. Length expressions, references, widths, dashes ' +
+      'and anything inside near/toward are exempt. Target: the element id.',
+    modes: ['mark', 'figure', 'icon'],
+    gridStep: { mark: 0.5, figure: 0.25, icon: 0.5 },
     tolerance: 1e-9,
   },
   angle: {
     description:
-      'Angles written in degrees (on.angle, polygon.rotate, repeat.axis, arc from/to) must be a multiple of 180/n for some n in ' +
+      'Angles written in degrees (on.angle, polygon.rotate, oval.rotate, repeat.axis, arc from/to) must be a multiple of 180/n for some n in ' +
       '{2, 3, 4, 5, 6, 8, 10, 12, 20, 24}; polygon.n and repeat.n (when 2 or more) must be in that set. ' +
       'Target: the element id.',
-    modes: ['mark', 'figure'],
+    modes: ['mark', 'figure', 'icon'],
     divisors: [2, 3, 4, 5, 6, 8, 10, 12, 20, 24],
     tolerance: 1e-9,
   },
   off_canvas: {
     description:
-      'Everything drawn must stay inside the square canvas of half side R + margin. A figure stroke counts ' +
-      'half its width beyond the geometry (an arc or outline by its own bounding box); a mark counts the bounding box of the filled region. ' +
-      'Target: the element id (figure) or "paint[i]" (mark).',
-    modes: ['mark', 'figure'],
+      'Everything drawn must stay inside the square canvas of half side R + margin. A stroke counts ' +
+      'half its width beyond the geometry (an arc or outline by its own bounding box); a fill counts the bounding box of the filled region. ' +
+      'Target: the element id (stroke) or "paint[i]" (fill).',
+    modes: ['mark', 'figure', 'icon'],
     tolerance: 1e-9,
   },
   empty_fill: {
     description: 'A fill layer must produce at least one closed outline. Target: "paint[i]".',
-    modes: ['mark'],
+    modes: ['mark', 'icon'],
   },
   thin_stroke: {
     description:
-      'With the canvas drawn 512 px wide, a stroke must be at least 1 px wide ' +
-      '(width * 512 / (2 * (R + margin)) >= 1). Target: "paint[i]".',
-    modes: ['figure'],
+      'In a figure, with the canvas drawn 512 px wide, a stroke must be at least 1 px wide ' +
+      '(width * 512 / (2 * (R + margin)) >= 1); in an icon it must be at least 0.5 module wide. Target: "paint[i]".',
+    modes: ['figure', 'icon'],
     canvasPx: 512,
     minPx: 1,
+    minWidth: { icon: 0.5 },
   },
   unused_shape: {
     description:
       'Every element must be reachable from a paint layer (stroke or erase) through references. Helper circles that a drawn ' +
       'element refers to are fine; a chain that nothing paints is reported element by element. Target: the element id.',
-    modes: ['mark', 'figure'],
+    modes: ['mark', 'figure', 'icon'],
+  },
+  uneven_steps: {
+    description:
+      'A polyline of 3 or more segments whose x (or y) runs one way in every segment while the other axis also moves ' +
+      'in every segment must have equal steps along that axis. Flat segments (stairs, letter shapes) are not checked. ' +
+      'Target: the element id.',
+    modes: ['figure', 'icon'],
+    tolerance: 1e-9,
+  },
+  width_count: {
+    description:
+      'An icon may use at most 3 distinct stroke widths (widths within 1e-9 count once). Target: "spec".',
+    modes: ['icon'],
+    maxWidths: 3,
+    tolerance: 1e-9,
   },
   unused_exception: {
     description:
       'An exception that matches no violation is reported. This rule cannot itself be excepted. ' +
       'Target: "exceptions[i]".',
-    modes: ['mark', 'figure'],
+    modes: ['mark', 'figure', 'icon'],
   },
 } satisfies Record<RuleId, RuleDefinition>;
 
@@ -122,7 +139,7 @@ function pointAngles(point: Point): number[] {
 }
 
 /** Named point slots of a shape, in the order they are written. */
-function pointSlots(shape: Shape): { label: string; point: Point }[] {
+export function pointSlots(shape: Shape): { label: string; point: Point }[] {
   switch (shape.type) {
     case 'point':
       return [{ label: 'at', point: shape.at }];
@@ -150,6 +167,12 @@ function pointSlots(shape: Shape): { label: string; point: Point }[] {
           ? []
           : [{ label: `through[${k}] corner`, point: piece.corner }],
       );
+    case 'polyline':
+      return shape.through.map((point, k) => ({ label: `through[${k}]`, point }));
+    case 'rect':
+      return shape.corners.map((point, k) => ({ label: `corners[${k}]`, point }));
+    case 'oval':
+      return [{ label: 'center', point: shape.center }];
     case 'polygon':
       return [];
   }
@@ -247,6 +270,16 @@ function checkOffGrid(spec: Spec): Finding[] {
     if (isCircleLike(shape) && typeof shape.r === 'number') {
       test('r', shape.r);
     }
+    if (shape.type === 'rect' && typeof shape.r === 'number') {
+      test('r', shape.r);
+    } else if (shape.type === 'oval') {
+      if (typeof shape.rx === 'number') {
+        test('rx', shape.rx);
+      }
+      if (typeof shape.ry === 'number') {
+        test('ry', shape.ry);
+      }
+    }
     if (problems.length > 0) {
       findings.push({ target: shape.id, message: problems.join('; ') });
     }
@@ -294,6 +327,8 @@ function checkAngle(spec: Spec): Finding[] {
         testCount('n', shape.n);
       }
       testAngle('axis', shape.axis);
+    } else if (shape.type === 'oval') {
+      testAngle('rotate', shape.rotate);
     }
     if (problems.length > 0) {
       findings.push({ target: shape.id, message: problems.join('; ') });
@@ -350,29 +385,28 @@ function strokeReach(item: ResolvedModel['strokes'][number]['items'][number]): n
       return Math.max(...item.loops.flat().map((v) => Math.max(Math.abs(v.x), Math.abs(v.y))));
     case 'chain':
       return chainReach(item.pieces);
+    case 'polyline':
+      return Math.max(...item.points.map((v) => Math.max(Math.abs(v.x), Math.abs(v.y))));
   }
 }
 
 function checkOffCanvas(spec: Spec, model: ResolvedModel, fills: readonly FillResult[]): Finding[] {
   const { tolerance } = RULES.off_canvas;
   const half = model.canvasHalf;
-  if (model.mode === 'mark') {
-    const findings: Finding[] = [];
-    model.fills.forEach((fill, i) => {
-      const box = fills[i]?.bbox;
-      if (box === null || box === undefined) {
-        return;
-      }
-      const reach = Math.max(-box.minX, box.maxX, -box.minY, box.maxY);
-      if (reach > half + tolerance) {
-        findings.push({
-          target: `paint[${fill.index}]`,
-          message: `fill reaches ${fmt(reach)} from the centre, canvas half side is ${fmt(half)}`,
-        });
-      }
-    });
-    return findings;
-  }
+  const fillFindings: Finding[] = [];
+  model.fills.forEach((fill, i) => {
+    const box = fills[i]?.bbox;
+    if (box === null || box === undefined) {
+      return;
+    }
+    const reach = Math.max(-box.minX, box.maxX, -box.minY, box.maxY);
+    if (reach > half + tolerance) {
+      fillFindings.push({
+        target: `paint[${fill.index}]`,
+        message: `fill reaches ${fmt(reach)} from the centre, canvas half side is ${fmt(half)}`,
+      });
+    }
+  });
   const worst = new Map<string, { reach: number; halfWidth: number }>();
   for (const stroke of model.strokes) {
     const halfWidth = stroke.width / 2;
@@ -384,7 +418,7 @@ function checkOffCanvas(spec: Spec, model: ResolvedModel, fills: readonly FillRe
       }
     }
   }
-  return spec.shapes.flatMap((shape) => {
+  const strokeFindings = spec.shapes.flatMap((shape) => {
     const found = worst.get(shape.id);
     return found === undefined
       ? []
@@ -395,6 +429,7 @@ function checkOffCanvas(spec: Spec, model: ResolvedModel, fills: readonly FillRe
           },
         ];
   });
+  return [...fillFindings, ...strokeFindings];
 }
 
 function checkEmptyFill(model: ResolvedModel, fills: readonly FillResult[]): Finding[] {
@@ -406,7 +441,19 @@ function checkEmptyFill(model: ResolvedModel, fills: readonly FillResult[]): Fin
 }
 
 function checkThinStroke(model: ResolvedModel): Finding[] {
-  const { canvasPx, minPx } = RULES.thin_stroke;
+  const { canvasPx, minPx, minWidth } = RULES.thin_stroke;
+  if (model.mode === 'icon') {
+    return model.strokes.flatMap((stroke) =>
+      stroke.width < minWidth.icon - EPS
+        ? [
+            {
+              target: `paint[${stroke.index}]`,
+              message: `stroke is ${fmt(stroke.width)} wide, at least ${minWidth.icon} required`,
+            },
+          ]
+        : [],
+    );
+  }
   return model.strokes.flatMap((stroke) => {
     const px = (stroke.width * canvasPx) / (2 * model.canvasHalf);
     return px < minPx
@@ -428,6 +475,82 @@ function checkUnusedShape(spec: Spec): Finding[] {
       target: shape.id,
       message: `${shape.type} is not reachable from any paint layer through references`,
     }));
+}
+
+const signOf = (d: number, tolerance: number): number =>
+  Math.abs(d) <= tolerance ? 0 : Math.sign(d);
+
+// True when every delta moves the same way and none is zero.
+const runsOneWay = (deltas: readonly number[], tolerance: number): boolean => {
+  const first = signOf(deltas[0] ?? 0, tolerance);
+  return first !== 0 && deltas.every((d) => signOf(d, tolerance) === first);
+};
+
+const movesEverywhere = (deltas: readonly number[], tolerance: number): boolean =>
+  deltas.every((d) => signOf(d, tolerance) !== 0);
+
+/**
+ * The axis a polyline of 4 or more vertices must have equal steps along, with the signed
+ * steps along it; null when `uneven_steps` does not look at the polyline.
+ */
+export function stepAxis(
+  vertices: readonly Vec[],
+  tolerance: number = RULES.uneven_steps.tolerance,
+): { axis: 'x' | 'y'; deltas: number[] } | null {
+  if (vertices.length < 4) {
+    return null;
+  }
+  const dx: number[] = [];
+  const dy: number[] = [];
+  vertices.slice(1).forEach((v, k) => {
+    const prev = vertices[k] as Vec;
+    dx.push(v.x - prev.x);
+    dy.push(v.y - prev.y);
+  });
+  if (runsOneWay(dx, tolerance) && movesEverywhere(dy, tolerance)) {
+    return { axis: 'x', deltas: dx };
+  }
+  if (runsOneWay(dy, tolerance) && movesEverywhere(dx, tolerance)) {
+    return { axis: 'y', deltas: dy };
+  }
+  return null;
+}
+
+function checkUnevenSteps(model: ResolvedModel): Finding[] {
+  const { tolerance } = RULES.uneven_steps;
+  const findings: Finding[] = [];
+  for (const el of model.elements) {
+    if (el.type !== 'polyline') {
+      continue;
+    }
+    const found = stepAxis(el.vertices, tolerance);
+    if (found === null) {
+      continue;
+    }
+    const steps = found.deltas.map(Math.abs);
+    if (Math.max(...steps) - Math.min(...steps) > tolerance) {
+      findings.push({
+        target: el.id,
+        message: `${steps.length} segments with uneven steps along ${found.axis}: ${steps.map(fmt).join(', ')}`,
+      });
+    }
+  }
+  return findings;
+}
+
+function checkWidthCount(model: ResolvedModel): Finding[] {
+  const { maxWidths, tolerance } = RULES.width_count;
+  const widths = model.strokes.map((stroke) => stroke.width).sort((a, b) => a - b);
+  const distinct = widths.filter((w, k) => k === 0 || w - (widths[k - 1] as number) > tolerance);
+  if (distinct.length <= maxWidths) {
+    return [];
+  }
+  return [
+    {
+      target: RESERVED_ID,
+      message: `${distinct.length} distinct stroke widths, at most ${maxWidths} allowed: ${distinct.map(fmt).join(', ')}`,
+    },
+  ];
 }
 
 function nearTangentHints(model: ResolvedModel): Hint[] {
@@ -474,20 +597,22 @@ export function lint(
   model: ResolvedModel,
   fills: readonly FillResult[],
 ): { violations: Violation[]; exceptionsApplied: AppliedException[]; hints: Hint[] } {
-  const findings: Record<Exclude<RuleId, 'unused_exception'>, Finding[]> = {
-    ratio_count: checkRatioCount(spec),
-    circle_count: checkCircleCount(spec),
-    off_grid: checkOffGrid(spec),
-    angle: checkAngle(spec),
-    off_canvas: checkOffCanvas(spec, model, fills),
-    empty_fill: checkEmptyFill(model, fills),
-    thin_stroke: checkThinStroke(model),
-    unused_shape: checkUnusedShape(spec),
+  const checks: Record<Exclude<RuleId, 'unused_exception'>, () => Finding[]> = {
+    ratio_count: () => checkRatioCount(spec),
+    circle_count: () => checkCircleCount(spec),
+    off_grid: () => checkOffGrid(spec),
+    angle: () => checkAngle(spec),
+    off_canvas: () => checkOffCanvas(spec, model, fills),
+    empty_fill: () => checkEmptyFill(model, fills),
+    thin_stroke: () => checkThinStroke(model),
+    unused_shape: () => checkUnusedShape(spec),
+    uneven_steps: () => checkUnevenSteps(model),
+    width_count: () => checkWidthCount(model),
   };
   const all: Violation[] = [];
   for (const rule of RULE_IDS) {
-    if (rule !== 'unused_exception') {
-      for (const f of findings[rule]) {
+    if (rule !== 'unused_exception' && (RULES[rule].modes as readonly Mode[]).includes(spec.mode)) {
+      for (const f of checks[rule]()) {
         all.push({ rule, ...f });
       }
     }

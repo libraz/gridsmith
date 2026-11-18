@@ -1,3 +1,4 @@
+import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it } from 'vitest';
 import { arrange } from '../../src/geom/arrangement.js';
 import type { Mask } from '../../src/render/match.js';
@@ -6,6 +7,7 @@ import {
   encodeRgbaPng,
   encodeRgbPng,
   inkMask,
+  rasterRgba,
   renderExportPng,
   renderMatchPng,
   renderPreviewPng,
@@ -394,5 +396,103 @@ describe('decodeImage', () => {
     expect(px(11, 10)).toEqual([0x22, 0x22, 0x22, 255]);
     expect(px(12, 10)).toEqual([0x1c, 0x7e, 0xd6, 255]);
     expect(px(13, 10)).toEqual([255, 255, 255, 255]);
+  });
+});
+
+describe('icon pixel preview', () => {
+  const iconInput = {
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes: [
+      {
+        id: 'plate',
+        type: 'rect',
+        corners: [
+          [-10, -8],
+          [10, 6],
+        ],
+        r: 2,
+      },
+      {
+        id: 'trend',
+        type: 'polyline',
+        through: [
+          [-8, -6],
+          [-4, -2],
+          [0, -4],
+          [4, 2],
+        ],
+      },
+    ],
+    paint: [
+      { fill: 'plate', color: '#f3f2f1' },
+      { stroke: ['trend'], width: 1, color: '#107c41' },
+    ],
+  };
+  const svgs = { ...svgsOf(iconInput), sizes: 'pixels' as const };
+  const out = renderPreviewPng('sizes', svgs);
+  const img = readPng(out.png);
+
+  const direct = (side: number) => {
+    const res = new Resvg(svgs.final, {
+      background: '#ffffff',
+      fitTo: { mode: 'width', value: side },
+    }).render();
+    return { width: res.width, pixels: res.pixels };
+  };
+  const at = (x: number, y: number): number[] => {
+    const i = (y * img.width + x) * 4;
+    return [...img.rgba.subarray(i, i + 4)];
+  };
+
+  it('is 336 x 192 and exempt from the size budget', () => {
+    expect([out.width, out.height]).toEqual([336, 192]);
+    expect([img.width, img.height]).toEqual([336, 192]);
+    expect(out.overBudget).toBe(false);
+  });
+
+  it.each([
+    [24, 0],
+    [16, 208],
+  ])('shows the %i px render as 8x8 blocks', (side, left) => {
+    const ref = direct(side);
+    expect(ref.width).toBe(side);
+    for (let y = 0; y < side * 8; y++) {
+      for (let x = 0; x < side * 8; x++) {
+        const i = (Math.floor(y / 8) * side + Math.floor(x / 8)) * 4;
+        expect(at(left + x, y)).toEqual([...ref.pixels.subarray(i, i + 4)]);
+      }
+    }
+  });
+
+  it('leaves the gap and the remainder white', () => {
+    for (let y = 0; y < 192; y++) {
+      for (let x = 192; x < 336; x++) {
+        if (x < 208 || y >= 128) {
+          expect(at(x, y)).toEqual([255, 255, 255, 255]);
+        }
+      }
+    }
+  });
+});
+
+describe('rasterRgba', () => {
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 12"><rect x="0" y="0" width="12" height="12" fill="#ff0000"/></svg>';
+  const image = rasterRgba(svg, 48);
+
+  it('is as wide as asked and keeps the aspect ratio', () => {
+    expect(image.width).toBe(48);
+    expect(image.height).toBe(24);
+    expect(image.data.length).toBe(48 * 24 * 4);
+  });
+
+  it('draws on opaque white', () => {
+    const at = (x: number, y: number) => [
+      ...image.data.subarray((y * 48 + x) * 4, (y * 48 + x) * 4 + 4),
+    ];
+    expect(at(40, 12)).toEqual([255, 255, 255, 255]);
+    expect(at(8, 12)).toEqual([255, 0, 0, 255]);
   });
 });

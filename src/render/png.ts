@@ -1,6 +1,6 @@
 import { crc32, deflateSync } from 'node:zlib';
 import { Resvg } from '@resvg/resvg-js';
-import { MASK_SIZE, type Mask } from './match.js';
+import { MASK_SIZE, type Mask, type RgbaImage } from './match.js';
 
 /** Views that are rasterized to PNG. */
 export type View = 'sheet' | 'final' | 'sizes' | 'guides' | 'match';
@@ -9,6 +9,8 @@ export type PreviewSvgs = {
   final: string;
   guides: string;
   sheet: { svg: string; width: number; height: number };
+  /** 'pixels' draws the final SVG at 24 and 16 px, enlarged 8x by nearest neighbour; default 'ladder'. */
+  sizes?: 'ladder' | 'pixels';
 };
 
 export type PreviewPng = {
@@ -22,6 +24,9 @@ const SHEET_LONG_SIDE = 1024;
 const FINAL_SIDE = 512;
 const SIZES_TILE = 128;
 const SIZES_SOURCES = [64, 32, 16] as const;
+const PIXEL_SOURCES = [24, 16] as const;
+const PIXEL_ZOOM = 8;
+const PIXEL_GAP = 16;
 const BACKGROUND = '#ffffff';
 const MAX_BYTES = 300 * 1024;
 const SHRINK = 0.75;
@@ -107,6 +112,16 @@ function rasterize(
   return { width: image.width, height: image.height, rgb };
 }
 
+/** An SVG on white at `side` px wide, as straight RGBA. */
+export function rasterRgba(svg: string, side: number): RgbaImage {
+  const image = new Resvg(svg, {
+    background: BACKGROUND,
+    fitTo: { mode: 'width', value: side },
+    font: { loadSystemFonts: false },
+  }).render();
+  return { width: image.width, height: image.height, data: new Uint8Array(image.pixels) };
+}
+
 /** Three marks rendered directly at 64/32/16 px, then nearest-neighbour scaled to equal tiles. */
 function rasterizeSizes(finalSvg: string, tile: number): Raster {
   const rgb = new Uint8Array(tile * SIZES_SOURCES.length * tile * 3).fill(255);
@@ -124,6 +139,28 @@ function rasterizeSizes(finalSvg: string, tile: number): Raster {
     }
   });
   return { width, height: tile, rgb };
+}
+
+/** The final SVG at 24 and 16 px, each enlarged 8x without smoothing, top-aligned with a gap. */
+function rasterizePixels(finalSvg: string): Raster {
+  const tiles = PIXEL_SOURCES.map((source) => {
+    const small = rasterize(finalSvg, { mode: 'width', value: source }, false);
+    return { small, side: source * PIXEL_ZOOM };
+  });
+  const width = tiles.reduce((w, t) => w + t.side, PIXEL_GAP * (tiles.length - 1));
+  const height = Math.max(...tiles.map((t) => t.side));
+  const rgb = new Uint8Array(width * height * 3).fill(255);
+  let left = 0;
+  for (const { small, side } of tiles) {
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        const from = (Math.floor(y / PIXEL_ZOOM) * small.width + Math.floor(x / PIXEL_ZOOM)) * 3;
+        rgb.set(small.rgb.subarray(from, from + 3), (y * width + left + x) * 3);
+      }
+    }
+    left += side + PIXEL_GAP;
+  }
+  return { width, height, rgb };
 }
 
 function rasterizeView(view: View, svgs: PreviewSvgs, factor: number): Raster {
@@ -146,6 +183,9 @@ function rasterizeView(view: View, svgs: PreviewSvgs, factor: number): Raster {
         false,
       );
     case 'sizes':
+      if (svgs.sizes === 'pixels') {
+        return rasterizePixels(svgs.final);
+      }
       return rasterizeSizes(svgs.final, Math.max(1, Math.round(SIZES_TILE * factor)));
     case 'match':
       throw new Error('renderPreviewPng: the match view is drawn by renderMatchPng');
@@ -158,6 +198,9 @@ export function renderPreviewPng(view: View, svgs: PreviewSvgs): PreviewPng {
   for (let attempt = 0; ; attempt++) {
     const raster = rasterizeView(view, svgs, factor);
     const png = encodeRgbPng(raster.width, raster.height, raster.rgb);
+    if (view === 'sizes' && svgs.sizes === 'pixels') {
+      return { png, width: raster.width, height: raster.height, overBudget: false };
+    }
     const over = png.length > MAX_BYTES;
     if (!over || attempt >= MAX_SHRINKS) {
       return { png, width: raster.width, height: raster.height, overBudget: over };

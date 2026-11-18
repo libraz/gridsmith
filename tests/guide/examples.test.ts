@@ -130,6 +130,33 @@ describe('guide examples', () => {
     });
   });
 
+  describe('line-chart', () => {
+    const example = EXAMPLES.find((e) => e.name === 'line-chart');
+
+    it('is an icon that mixes fill and stroke layers', () => {
+      expect(example?.spec.mode).toBe('icon');
+      const kinds = example?.spec.paint.map((layer) => ('fill' in layer ? 'fill' : 'stroke'));
+      expect(kinds).toEqual(['fill', 'stroke', 'stroke', 'fill']);
+    });
+
+    it('shares the last vertex of the trend with the dot through one point', () => {
+      const shapes = example?.spec.shapes ?? [];
+      const trend = shapes.find((s) => s.id === 'trend');
+      const dot = shapes.find((s) => s.id === 'dot');
+      expect(trend?.type === 'polyline' && trend.through.at(-1)).toBe('p4');
+      expect(dot?.type === 'circle' && dot.center).toBe('p4');
+    });
+
+    it('draws one fill and one stroke segment per paint layer', () => {
+      const resolved = resolveSpec(specSchema.parse(example?.spec));
+      if (!resolved.ok) {
+        throw new Error(JSON.stringify(resolved.errors));
+      }
+      expect(resolved.model.fills).toHaveLength(2);
+      expect(resolved.model.strokes).toHaveLength(2);
+    });
+  });
+
   for (const example of EXAMPLES) {
     describe(example.name, () => {
       it('validates, resolves and lints without violations or exceptions', () => {

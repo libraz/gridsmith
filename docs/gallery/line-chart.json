@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "mode": "icon",
+  "grid": {
+    "divisions": 12
+  },
+  "concept": "Line chart: two axes and a rising zigzag with evenly spaced points",
+  "shapes": [
+    {
+      "id": "plate",
+      "type": "rect",
+      "corners": [
+        [
+          -11,
+          -11
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "r": 3
+    },
+    {
+      "id": "axis",
+      "type": "polyline",
+      "through": [
+        [
+          -7.5,
+          7
+        ],
+        [
+          -7.5,
+          -7.5
+        ],
+        [
+          7,
+          -7.5
+        ]
+      ]
+    },
+    {
+      "id": "p1",
+      "type": "point",
+      "at": [
+        -4,
+        -3
+      ]
+    },
+    {
+      "id": "p2",
+      "type": "point",
+      "at": [
+        0,
+        1
+      ]
+    },
+    {
+      "id": "p3",
+      "type": "point",
+      "at": [
+        4,
+        -1
+      ]
+    },
+    {
+      "id": "p4",
+      "type": "point",
+      "at": [
+        8,
+        5
+      ]
+    },
+    {
+      "id": "trend",
+      "type": "polyline",
+      "through": [
+        "p1",
+        "p2",
+        "p3",
+        "p4"
+      ]
+    },
+    {
+      "id": "dot",
+      "type": "circle",
+      "center": "p4",
+      "r": 1.5
+    }
+  ],
+  "paint": [
+    {
+      "fill": "plate",
+      "color": "#f3f2f1"
+    },
+    {
+      "stroke": [
+        "axis"
+      ],
+      "width": 1,
+      "color": "#8a8f98",
+      "join": "miter",
+      "cap": "butt"
+    },
+    {
+      "stroke": [
+        "trend"
+      ],
+      "width": 1.5,
+      "color": "#107c41"
+    },
+    {
+      "fill": "dot",
+      "color": "#107c41"
+    }
+  ]
+}

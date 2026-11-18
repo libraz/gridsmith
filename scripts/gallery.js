@@ -26,6 +26,8 @@ const { renderGuidesSvg, renderSheetSvg } = await import('../dist/render/sheet.j
 const { renderFinalSvg } = await import('../dist/render/svg.js');
 const { evaluate, ToolFailure } = await import('../dist/tools/shared.js');
 
+const isIcon = (example) => example.spec.mode === 'icon';
+
 const specJson = (example) => `${JSON.stringify(example.spec, null, 2)}\n`;
 
 /** Expected file name -> content for one example. */
@@ -54,15 +56,19 @@ function render(example) {
       exceptionsApplied: ev.exceptionsApplied,
     }),
   };
-  const png = (view) => renderPreviewPng(view, svgs).png;
+  const png = (view, extra = {}) => renderPreviewPng(view, { ...svgs, ...extra }).png;
   const { name } = example;
-  return new Map([
+  const files = new Map([
     [`${name}.png`, png('final')],
     [`${name}-sheet.png`, png('sheet')],
     [`${name}-guides.png`, png('guides')],
     [`${name}.svg`, svgs.final],
     [`${name}.json`, specJson(example)],
   ]);
+  if (isIcon(example)) {
+    files.set(`${name}-sizes.png`, png('sizes', { sizes: 'pixels' }));
+  }
+  return files;
 }
 
 async function listGallery() {
@@ -80,6 +86,7 @@ const expectedNames = new Set(
     `${e.name}-guides.png`,
     `${e.name}.svg`,
     `${e.name}.json`,
+    ...(isIcon(e) ? [`${e.name}-sizes.png`] : []),
   ]),
 );
 

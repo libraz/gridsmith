@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import { compareMasks } from '../render/match.js';
 import { inkMask, renderMatchPng, renderPreviewPng, underlayHref } from '../render/png.js';
+import { renderSegments } from '../render/segments.js';
 import { renderGuidesSvg, renderSheetSvg } from '../render/sheet.js';
 import { renderFinalSvg } from '../render/svg.js';
 import type { ResolvedElement, ResolvedModel } from '../resolve/resolve.js';
@@ -33,11 +34,12 @@ const VIEWS = [
   'guides',
   'guides_svg',
   'match',
+  'segments',
 ] as const;
 const VIEW_LIST = VIEWS.map((v) => `"${v}"`).join(', ');
 const VIEWS_ALLOWED = `an array of 1 to ${VIEWS.length} distinct values from ${VIEW_LIST}`;
 const MAX_VIOLATIONS = 50;
-/** An SVG view longer than this is not returned. */
+/** An SVG view or the segments text longer than this is not returned. */
 const SVG_TEXT_MAX_CHARS = 60000;
 
 type SvgView = 'svg' | 'sheet_svg' | 'guides_svg';
@@ -80,24 +82,25 @@ const inputSchema = z.looseObject({
     .unknown()
     .optional()
     .describe(
-      'Array of 1 to 8 distinct views, returned in this order after the JSON. PNG images: "sheet" (construction sheet), "final" (finished drawing, 512 px), "sizes" (mark only: 64, 32 and 16 px side by side), "guides" (finished drawing with every construction element over it, 512 px), "match" (needs underlay: overlap of the reference and the drawing, 512 px; both dark, reference only orange, drawing only blue). SVG markup as text: "svg" (finished drawing), "sheet_svg" (construction sheet), "guides_svg" (guides, transparent). An SVG over 60000 characters is not returned; use gridsmith_export. Default: ["sheet", "sizes"] for a mark, ["sheet", "final"] for a figure.',
+      'Array of 1 to 9 distinct views, returned in this order after the JSON. PNG images: "sheet" (construction sheet), "final" (finished drawing, 512 px), "sizes" (mark: 64, 32 and 16 px side by side; icon: 24 and 16 px enlarged 8x as a pixel preview, 336x192; not for a figure), "guides" (finished drawing with every construction element over it, 512 px), "match" (needs underlay: overlap of the reference and the drawing, 512 px; both dark, reference only orange, drawing only blue). Text: "svg" (finished drawing), "sheet_svg" (construction sheet), "guides_svg" (guides, transparent), "segments" (icon only: the path segments as a JSON string). A text view over 60000 characters is not returned; use gridsmith_export. Default: ["sheet", "sizes"] for a mark or an icon, ["sheet", "final"] for a figure.',
     ),
   underlay: z
     .unknown()
     .optional()
     .describe(
-      'Optional reference image to match: { path, box?, threshold?, invert? }. path: absolute path of a PNG or JPEG file (at most 4 MB, 8192 px a side). box: [x0, y0, x1, y1] in modules, where the shape in the image is placed (default [-R, -R, R, R]). threshold: integer 1 to 254 (default: automatic). invert: true when the shape is the lighter part. Adds "match" to the report (iou, missing, excess, offset, grid, blobs, underlay) and draws the reference on the sheet.',
+      'Optional reference image to match: { path, box?, fit?, threshold?, invert? }. path: absolute path of a PNG or JPEG file (at most 4 MB, 8192 px a side). box: [x0, y0, x1, y1] in modules, where the shape in the image is placed (default [-R, -R, R, R]). fit: "shape" (default) places the bounding box of the shape in box, "image" places the whole image. threshold: integer 1 to 254 (default: automatic). invert: true when the shape is the lighter part. Adds "match" to the report (iou, missing, excess, offset, grid, blobs, underlay) and draws the reference on the sheet.',
     ),
 });
 
 const DESCRIPTION =
-  'Draws a spec and returns a JSON report (resolved geometry, rule violations, near-tangent hints, statistics) plus the requested views: PNG previews (sheet, final, sizes, guides) and SVG markup (svg, sheet_svg, guides_svg). ' +
+  'Draws a spec and returns a JSON report (resolved geometry, rule violations, near-tangent hints, statistics) plus the requested views: PNG previews (sheet, final, sizes, guides) and text (svg, sheet_svg, guides_svg; segments for an icon). ' +
   'Reports violations without refusing to draw, so use it to iterate. Writes nothing. ' +
   'Read gridsmith_guide first for the spec format.';
 
 const DEFAULT_VIEWS: Record<Spec['mode'], RenderView[]> = {
   mark: ['sheet', 'sizes'],
   figure: ['sheet', 'final'],
+  icon: ['sheet', 'sizes'],
 };
 
 const xy = (p: { x: number; y: number }): [number, number] => [round4(p.x), round4(p.y)];
@@ -158,6 +161,30 @@ function describeElement(el: ResolvedElement): Record<string, unknown> {
       return { id: el.id, type: el.type, vertices: el.vertices.map(xy) };
     case 'repeat':
       return { id: el.id, type: el.type, of: el.of, copies: el.copyCount };
+    case 'polyline':
+      return { id: el.id, type: el.type, vertices: el.vertices.map(xy) };
+    case 'rect':
+      return {
+        id: el.id,
+        type: el.type,
+        min: xy(el.min),
+        max: xy(el.max),
+        r: round4(el.r),
+        area: round4(el.area),
+      };
+    case 'oval':
+      return {
+        id: el.id,
+        type: el.type,
+        cx: round4(el.center.x),
+        cy: round4(el.center.y),
+        rx: round4(el.rx),
+        ry: round4(el.ry),
+        rotate: round4(el.rotate),
+        end: round4(el.end),
+        side: round4(el.side),
+        area: round4(el.area),
+      };
     case 'outline':
       return {
         id: el.id,
@@ -182,7 +209,7 @@ function statsOf(ev: Evaluation): Record<string, unknown>[] {
       ...model.erases.map((e) => ({ paint: e.index, erases: e.shapes.length })),
     ].sort((a, b) => a.paint - b.paint);
   }
-  return model.fills.map((layer, i) => {
+  const filled = model.fills.map((layer, i) => {
     const fill = fills[i];
     const edges = fill?.loops.flat() ?? [];
     const bbox = fill?.bbox ?? null;
@@ -203,14 +230,21 @@ function statsOf(ev: Evaluation): Record<string, unknown>[] {
             },
     };
   });
+  if (model.mode !== 'icon') {
+    return filled;
+  }
+  const stroked = model.strokes.map((s) => ({ paint: s.index, strokes: s.items.length }));
+  return [...filled, ...stroked].sort((a, b) => Number(a.paint) - Number(b.paint));
 }
+
+const MODE_NAME: Record<Spec['mode'], string> = { mark: 'Mark', figure: 'Figure', icon: 'Icon' };
 
 const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 function summaryOf(ev: Evaluation): string {
   const { spec, violations, exceptionsApplied, exportable } = ev;
   return (
-    `${spec.mode === 'mark' ? 'Mark' : 'Figure'} with ${plural(spec.shapes.length, 'shape')} and ` +
+    `${MODE_NAME[spec.mode]} with ${plural(spec.shapes.length, 'shape')} and ` +
     `${plural(spec.paint.length, 'paint layer')}: ${plural(violations.length, 'violation')}, ` +
     `${plural(exceptionsApplied.length, 'exception')} applied; ` +
     `${exportable ? 'exportable' : 'not exportable until the violations are fixed or excepted'}.`
@@ -292,6 +326,12 @@ export function registerRender(server: McpServer): void {
               `${TOOL}: views[${at}]: view is not available for a figure (received: "sizes"; allowed: "sheet" or "final" when mode is "figure")`,
             ]);
           }
+          const segmentsAt = views.indexOf('segments');
+          if (spec.mode !== 'icon' && segmentsAt >= 0) {
+            throw new ToolFailure([
+              `${TOOL}: views[${segmentsAt}]: view is not available for ${spec.mode === 'mark' ? 'a mark' : 'a figure'} (received: "segments"; allowed: "segments" only when mode is "icon")`,
+            ]);
+          }
           const matchAt = views.indexOf('match');
           if (matchAt >= 0 && parsed.underlay === undefined) {
             throw new ToolFailure([
@@ -307,6 +347,7 @@ export function registerRender(server: McpServer): void {
         const svgs = {
           final: renderFinalSvg(ev.model, ev.fills),
           guides: renderGuidesSvg(ev.model, ev.fills),
+          ...(ev.model.mode === 'icon' ? { sizes: 'pixels' as const } : {}),
           sheet: renderSheetSvg({
             spec: ev.spec,
             model: ev.model,
@@ -327,11 +368,14 @@ export function registerRender(server: McpServer): void {
           sheet_svg: svgs.sheet.svg,
           guides_svg: svgs.guides,
         };
+        const textOnly = (view: RenderView): view is SvgView | 'segments' =>
+          isSvgView(view) || view === 'segments';
+        const segmentsText = (): string => JSON.stringify(renderSegments(ev.model, ev.fills));
         const truncated: string[] = [];
         const blocks: (ReturnType<typeof pngImage> | ReturnType<typeof jsonText>)[] = [];
         for (const view of views) {
-          if (isSvgView(view)) {
-            const text = svgText[view];
+          if (textOnly(view)) {
+            const text = view === 'segments' ? segmentsText() : svgText[view];
             if (text.length > SVG_TEXT_MAX_CHARS) {
               truncated.push(`${view}: too large, use gridsmith_export`);
             } else {

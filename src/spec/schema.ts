@@ -15,6 +15,8 @@ export const RULE_IDS = [
   'empty_fill',
   'thin_stroke',
   'unused_shape',
+  'uneven_steps',
+  'width_count',
   'unused_exception',
 ] as const;
 
@@ -359,6 +361,33 @@ const repeatShape = z
     }
   });
 
+const polylineShape = z.strictObject({
+  id: idSchema,
+  type: z.literal('polyline'),
+  through: z
+    .array(pointSchema, { error: complain('through', 'an array of 3 to 32 points') })
+    .min(3, { error: complain('through', 'an array of 3 to 32 points') })
+    .max(32, { error: complain('through', 'an array of 3 to 32 points') }),
+});
+
+const rectShape = z.strictObject({
+  id: idSchema,
+  type: z.literal('rect'),
+  corners: z.tuple([pointSchema, pointSchema], {
+    error: complain('corners', 'an array of 2 points'),
+  }),
+  r: lengthSchema.optional(),
+});
+
+const ovalShape = z.strictObject({
+  id: idSchema,
+  type: z.literal('oval'),
+  center: pointSchema,
+  rx: lengthSchema,
+  ry: lengthSchema,
+  rotate: angle.default(0),
+});
+
 const shapeSchema = z.discriminatedUnion(
   'type',
   [
@@ -371,21 +400,40 @@ const shapeSchema = z.discriminatedUnion(
     pointsShape,
     outlineShape,
     repeatShape,
+    polylineShape,
+    rectShape,
+    ovalShape,
   ],
   {
     error: complain(
       'type',
-      'one of "point", "circle", "tangent_circle", "line", "arc", "polygon", "points", "outline", "repeat"',
+      'one of "point", "circle", "tangent_circle", "line", "arc", "polygon", "points", "outline", "repeat", "polyline", "rect", "oval"',
     ),
   },
 );
 
 const fillLayer = z.strictObject({ fill: regionSchema, color: colorSchema });
 
+const dashLength = z
+  .number({ error: complain('dash', 'an array of 2 lengths: dash, gap') })
+  .gt(0, { error: complain('dash', 'an array of 2 lengths: dash, gap') })
+  .max(64, { error: complain('dash', 'an array of 2 lengths: dash, gap') });
+
 const strokeLayer = z.strictObject({
   stroke: listOf(refId('stroke'), 'stroke', 1, 32),
   width: widthSchema,
   color: colorSchema,
+  cap: z
+    .enum(['round', 'butt', 'square'], { error: complain('cap', '"round", "butt" or "square"') })
+    .optional(),
+  join: z
+    .enum(['round', 'miter', 'bevel'], { error: complain('join', '"round", "miter" or "bevel"') })
+    .optional(),
+  dash: z
+    .tuple([dashLength, dashLength], {
+      error: complain('dash', 'an array of 2 lengths: dash, gap'),
+    })
+    .optional(),
 });
 
 const eraseLayer = z.strictObject({ erase: listOf(refId('erase'), 'erase', 1, 32) });
@@ -437,6 +485,9 @@ export type PolygonShape = z.infer<typeof polygonShape>;
 export type ArcShape = z.infer<typeof arcShape>;
 export type PointsShape = z.infer<typeof pointsShape>;
 export type OutlineShape = z.infer<typeof outlineShape>;
+export type PolylineShape = z.infer<typeof polylineShape>;
+export type RectShape = z.infer<typeof rectShape>;
+export type OvalShape = z.infer<typeof ovalShape>;
 export type OutlinePiece = z.infer<typeof outlinePiece>;
 export type RepeatShape = z.infer<typeof repeatShape>;
 export type CircleLikeShape = CircleShape | TangentCircleShape;
@@ -526,6 +577,22 @@ export function shapeReferences(shape: Shape): string[] {
     case 'repeat':
       ids = [...shape.of, ...pointReferences(shape.center)];
       break;
+    case 'polyline':
+      ids = shape.through.flatMap(pointReferences);
+      break;
+    case 'rect':
+      ids = [
+        ...shape.corners.flatMap(pointReferences),
+        ...(shape.r === undefined ? [] : lengthReferences(shape.r)),
+      ];
+      break;
+    case 'oval':
+      ids = [
+        ...pointReferences(shape.center),
+        ...lengthReferences(shape.rx),
+        ...lengthReferences(shape.ry),
+      ];
+      break;
   }
   return [...new Set(ids)];
 }
@@ -578,8 +645,19 @@ const POINT_REF = kindSet('the id of a point, circle or tangent_circle', [
 ]);
 const LINE_ONLY = kindSet('the id of a line', ['line']);
 const REPEATABLE = kindSet(
-  'the id of a circle, tangent_circle, line, arc, polygon, points or outline',
-  ['circle', 'tangent_circle', 'line', 'arc', 'polygon', 'points', 'outline'],
+  'the id of a circle, tangent_circle, line, arc, polygon, points, outline, polyline, rect or oval',
+  [
+    'circle',
+    'tangent_circle',
+    'line',
+    'arc',
+    'polygon',
+    'points',
+    'outline',
+    'polyline',
+    'rect',
+    'oval',
+  ],
 );
 const STROKABLE = kindSet('the id of any shape except point', [
   'circle',
@@ -590,14 +668,17 @@ const STROKABLE = kindSet('the id of any shape except point', [
   'points',
   'outline',
   'repeat',
+  'polyline',
+  'rect',
+  'oval',
 ]);
 const ERASABLE = kindSet(
-  'the id of a circle, tangent_circle, polygon, points, outline or repeat of those',
-  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat'],
+  'the id of a circle, tangent_circle, polygon, points, outline, rect, oval or repeat of those',
+  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat', 'rect', 'oval'],
 );
 const REGION_LEAF = kindSet(
-  'the id of a circle, tangent_circle, polygon, points, outline or repeat',
-  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat'],
+  'the id of a circle, tangent_circle, polygon, points, outline, rect, oval or repeat',
+  ['circle', 'tangent_circle', 'polygon', 'points', 'outline', 'repeat', 'rect', 'oval'],
 );
 
 const TARGET_PAINT = /^paint\[(0|[1-9][0-9]*)\]$/;
@@ -614,6 +695,12 @@ const curveCount = (shape: Shape): number => {
     case 'points':
     case 'outline':
       return shape.through.length;
+    case 'polyline':
+      return shape.through.length - 1;
+    case 'rect':
+      return 8;
+    case 'oval':
+      return 4;
     default:
       return 1;
   }
@@ -621,10 +708,14 @@ const curveCount = (shape: Shape): number => {
 
 const specObject = z.strictObject({
   version: z.literal(1, { error: complain('version', '1') }),
-  mode: z.enum(['mark', 'figure'], { error: complain('mode', '"mark" or "figure"') }),
+  mode: z.enum(['mark', 'figure', 'icon'], {
+    error: complain('mode', '"mark", "figure" or "icon"'),
+  }),
   grid: z.strictObject({
-    divisions: z.literal([4, 6, 8], { error: complain('divisions', '4, 6 or 8') }),
-    margin: intIn('margin', 0, 4).default(1),
+    divisions: z.literal([4, 6, 8, 12], {
+      error: complain('divisions', '4, 6 or 8, or 12 for an icon'),
+    }),
+    margin: intIn('margin', 0, 4).optional(),
   }),
   concept: z
     .string({ error: complain('concept', 'a string of 1 to 400 characters') })
@@ -642,6 +733,25 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
   const add = (path: Path, message: string): void => {
     ctx.addIssue({ code: 'custom', path, message });
   };
+
+  const { divisions, margin } = spec.grid;
+  if (spec.mode === 'icon' && divisions !== 12) {
+    add(
+      ['grid', 'divisions'],
+      `divisions is invalid (received: ${divisions}; allowed: 12 when mode is "icon")`,
+    );
+  } else if (spec.mode !== 'icon' && divisions === 12) {
+    add(
+      ['grid', 'divisions'],
+      `divisions is invalid (received: ${divisions}; allowed: 4, 6 or 8 unless mode is "icon")`,
+    );
+  }
+  if (spec.mode === 'icon' && margin !== undefined && margin !== 0) {
+    add(
+      ['grid', 'margin'],
+      `margin is invalid (received: ${margin}; allowed: 0 or omitted when mode is "icon")`,
+    );
+  }
 
   const byId = new Map<string, { index: number; shape: Shape }>();
   spec.shapes.forEach((shape, index) => {
@@ -776,6 +886,24 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
           }
         }
         break;
+      case 'polyline':
+        for (const [k, p] of shape.through.entries()) {
+          checkPoint(p, at('through', k), i, earlier, 0);
+        }
+        break;
+      case 'rect':
+        for (const [k, p] of shape.corners.entries()) {
+          checkPoint(p, at('corners', k), i, earlier, 0);
+        }
+        if (shape.r !== undefined) {
+          checkLength(shape.r, at('r'), i, earlier);
+        }
+        break;
+      case 'oval':
+        checkPoint(shape.center, at('center'), i, earlier, 0);
+        checkLength(shape.rx, at('rx'), i, earlier);
+        checkLength(shape.ry, at('ry'), i, earlier);
+        break;
       case 'repeat': {
         shape.of.forEach((id, k) => {
           const found = byId.get(id);
@@ -809,7 +937,12 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
       if (found?.shape.type === 'repeat') {
         for (const id of found.shape.of) {
           const inner = byId.get(id);
-          if (inner !== undefined && (inner.shape.type === 'line' || inner.shape.type === 'arc')) {
+          if (
+            inner !== undefined &&
+            (inner.shape.type === 'line' ||
+              inner.shape.type === 'arc' ||
+              inner.shape.type === 'polyline')
+          ) {
             add(
               path,
               `region uses a repeat of a ${inner.shape.type} (received: ${show(region)} repeating ${show(id)}; allowed: a repeat of circles, tangent_circles, polygons or points)`,
@@ -842,7 +975,7 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
   spec.paint.forEach((layer, j) => {
     const at = (...rest: (string | number)[]): Path => ['paint', j, ...rest];
     if ('fill' in layer) {
-      if (spec.mode !== 'mark') {
+      if (spec.mode === 'figure') {
         add(
           at(),
           `fill layer in a ${spec.mode} spec (received: fill; allowed: stroke layers when mode is "figure")`,
@@ -857,7 +990,14 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
         );
       }
     } else if ('erase' in layer) {
-      if (spec.mode !== 'figure') {
+      if (spec.mode === 'icon') {
+        add(
+          at(),
+          'erase layer in an icon spec (received: erase; allowed: "fill" or "stroke" layers when mode is "icon")',
+        );
+        return;
+      }
+      if (spec.mode === 'mark') {
         add(
           at(),
           `erase layer in a ${spec.mode} spec (received: erase; allowed: fill layers when mode is "mark")`,
@@ -876,7 +1016,7 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
         if (found?.shape.type === 'repeat') {
           for (const inner of found.shape.of) {
             const type = byId.get(inner)?.shape.type;
-            if (type === 'line' || type === 'arc') {
+            if (type === 'line' || type === 'arc' || type === 'polyline') {
               add(
                 at('erase', k),
                 `erase uses a repeat of a ${type} (received: ${show(id)} repeating ${show(inner)}; allowed: a repeat of circles, tangent_circles, polygons or points)`,
@@ -887,7 +1027,7 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
       }
       checkDistinct(layer.erase, at('erase'));
     } else {
-      if (spec.mode !== 'figure') {
+      if (spec.mode === 'mark') {
         add(
           at(),
           `stroke layer in a ${spec.mode} spec (received: stroke; allowed: fill layers when mode is "mark")`,
@@ -902,7 +1042,7 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
     }
   });
 
-  if (spec.mode === 'mark') {
+  if (spec.mode !== 'figure') {
     const repeated = new Set(spec.shapes.flatMap((s) => (s.type === 'repeat' ? s.of : [])));
     let curves = 0;
     for (const [index, shape] of spec.shapes.entries()) {
@@ -920,7 +1060,8 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
         break;
       }
     }
-  } else {
+  }
+  if (spec.mode !== 'mark') {
     let drawn = 0;
     outer: for (const [j, layer] of spec.paint.entries()) {
       if (!('stroke' in layer)) {
@@ -967,7 +1108,10 @@ function checkSpec(spec: z.output<typeof specObject>, ctx: z.core.$RefinementCtx
 }
 
 /** The strict schema of a drawing spec, including cross-element checks. */
-export const specSchema = specObject.superRefine(checkSpec);
+export const specSchema = specObject.superRefine(checkSpec).transform((spec) => ({
+  ...spec,
+  grid: { ...spec.grid, margin: spec.grid.margin ?? (spec.mode === 'icon' ? 0 : 1) },
+}));
 
 export type Spec = z.infer<typeof specSchema>;
 export type SpecInput = z.input<typeof specSchema>;

@@ -10,6 +10,7 @@ import {
   shapeReferences,
   specSchema,
 } from '../../src/spec/schema.js';
+import { specJsonSchema } from '../../src/tools/shared.js';
 
 type Obj = Record<string, unknown>;
 
@@ -127,9 +128,9 @@ describe('specSchema examples and defaults', () => {
     expect(() => JSON.stringify(json)).not.toThrow();
   });
 
-  it('lists the nine rule ids', () => {
-    expect(RULE_IDS).toHaveLength(9);
-    expect(new Set(RULE_IDS).size).toBe(9);
+  it('lists the eleven rule ids', () => {
+    expect(RULE_IDS).toHaveLength(11);
+    expect(new Set(RULE_IDS).size).toBe(11);
   });
 });
 
@@ -1242,5 +1243,344 @@ describe('outline element', () => {
     expect(accepted(spec(64))).toBe(true);
     expect(accepted(repeated(3))).toBe(true);
     expectRejectedAt(repeated(4), 'shapes.2');
+  });
+});
+
+describe('icon mode', () => {
+  const iconSpec = (extra: Obj = {}): Obj => ({
+    version: 1,
+    mode: 'icon',
+    grid: { divisions: 12 },
+    shapes: [
+      {
+        id: 'plate',
+        type: 'rect',
+        corners: [
+          [-11, -11],
+          [11, 11],
+        ],
+        r: 3,
+      },
+      {
+        id: 'axis',
+        type: 'polyline',
+        through: [
+          [-7, 7],
+          [-7, -7],
+          [7, -7],
+        ],
+      },
+      { id: 'face', type: 'oval', center: [0, 0], rx: 6, ry: 4, rotate: 30 },
+    ],
+    paint: [
+      { fill: 'plate', color: '#f3f2f1' },
+      { stroke: ['axis', 'face'], width: 1, cap: 'butt', join: 'miter', dash: [2, 1] },
+      { fill: 'face' },
+    ],
+    ...extra,
+  });
+  const messages = (input: unknown): string[] => {
+    const result = specSchema.safeParse(input);
+    return result.success ? [] : result.error.issues.map((i) => i.message);
+  };
+  const expectMessage = (input: unknown, path: string, allowed: string) => {
+    expectRejectedAt(input, path);
+    expect(messages(input).some((m) => m.endsWith(`allowed: ${allowed})`))).toBe(true);
+  };
+  const withShape = (shape: Obj): Obj =>
+    iconSpec({ shapes: [shape], paint: [{ stroke: [shape.id], width: 1 }] });
+  const strokeWith = (extra: Obj): Obj =>
+    iconSpec({
+      shapes: [{ id: 'l', type: 'line', from: [0, 0], to: [4, 0] }],
+      paint: [{ stroke: ['l'], width: 1, ...extra }],
+    });
+
+  it('accepts fill and stroke layers in any order and keeps the new options', () => {
+    const spec = specSchema.parse(iconSpec());
+    expect(spec.paint[1]).toMatchObject({ cap: 'butt', join: 'miter', dash: [2, 1] });
+    expect(spec.shapes[2]).toMatchObject({ rotate: 30 });
+    expect(accepted(iconSpec({ paint: [{ stroke: ['axis'], width: 1 }, { fill: 'plate' }] }))).toBe(
+      true,
+    );
+  });
+
+  it('defaults margin by mode and keeps it a number', () => {
+    expect(specSchema.parse(iconSpec()).grid.margin).toBe(0);
+    expect(specSchema.parse(iconSpec({ grid: { divisions: 12, margin: 0 } })).grid.margin).toBe(0);
+    expect(specSchema.parse(markSpec()).grid.margin).toBe(1);
+    expect(specSchema.parse(figureSpec({ grid: { divisions: 8, margin: 2 } })).grid.margin).toBe(2);
+  });
+
+  it('builds the input JSON Schema with margin optional', () => {
+    const json = specJsonSchema() as {
+      properties: { grid: { required?: string[]; properties: Record<string, unknown> } };
+    };
+    expect(Object.keys(json.properties.grid.properties)).toContain('margin');
+    expect(json.properties.grid.required ?? []).not.toContain('margin');
+    expect(json.properties.grid.required).toContain('divisions');
+  });
+
+  it('lists the modes and divisions it allows', () => {
+    expectMessage(markSpec({ mode: 'sketch' }), 'mode', '"mark", "figure" or "icon"');
+    expectMessage(
+      markSpec({ grid: { divisions: 5 } }),
+      'grid.divisions',
+      '4, 6 or 8, or 12 for an icon',
+    );
+  });
+
+  it('ties divisions 12 to the icon mode', () => {
+    expectMessage(iconSpec({ grid: { divisions: 8 } }), 'grid.divisions', '12 when mode is "icon"');
+    expectMessage(
+      markSpec({ grid: { divisions: 12 } }),
+      'grid.divisions',
+      '4, 6 or 8 unless mode is "icon"',
+    );
+    expectMessage(
+      figureSpec({ grid: { divisions: 12 } }),
+      'grid.divisions',
+      '4, 6 or 8 unless mode is "icon"',
+    );
+  });
+
+  it('allows only margin 0 or none in an icon', () => {
+    expectMessage(
+      iconSpec({ grid: { divisions: 12, margin: 1 } }),
+      'grid.margin',
+      '0 or omitted when mode is "icon"',
+    );
+  });
+
+  it('rejects an erase layer in an icon and keeps the mark and figure messages', () => {
+    expectMessage(
+      iconSpec({ paint: [{ stroke: ['axis'], width: 1 }, { erase: ['plate'] }] }),
+      'paint.1',
+      '"fill" or "stroke" layers when mode is "icon"',
+    );
+    expect(messages(markSpec({ paint: [{ stroke: ['a'], width: 1 }] }))).toEqual([
+      'stroke layer in a mark spec (received: stroke; allowed: fill layers when mode is "mark")',
+    ]);
+    expect(messages(figureSpec({ paint: [{ fill: 'a' }] }))).toEqual([
+      'fill layer in a figure spec (received: fill; allowed: stroke layers when mode is "figure")',
+    ]);
+  });
+
+  it('requires 3 to 32 polyline points', () => {
+    const through = (n: number) => Array.from({ length: n }, (_, i) => [i, 0]);
+    for (const n of [0, 2, 33]) {
+      expectMessage(
+        withShape({ id: 'p', type: 'polyline', through: through(n) }),
+        'shapes.0.through',
+        'an array of 3 to 32 points',
+      );
+    }
+    expect(accepted(withShape({ id: 'p', type: 'polyline', through: through(3) }))).toBe(true);
+    expect(accepted(withShape({ id: 'p', type: 'polyline', through: through(32) }))).toBe(true);
+  });
+
+  it('rejects a polyline or a repeat of one as a fill region or erase target', () => {
+    const shapes = [
+      {
+        id: 'p',
+        type: 'polyline',
+        through: [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+        ],
+      },
+      { id: 'r', type: 'repeat', of: ['p'], n: 3 },
+    ];
+    expect(messages(iconSpec({ shapes, paint: [{ fill: 'p' }] }))[0]).toContain(
+      'wrong kind of element (received: "p", a polyline; allowed: the id of a circle, tangent_circle, polygon, points, outline, rect, oval or repeat)',
+    );
+    expect(messages(iconSpec({ shapes, paint: [{ fill: 'r' }] }))[0]).toContain(
+      'region uses a repeat of a polyline',
+    );
+    expect(
+      messages(figureSpec({ shapes, paint: [{ stroke: ['p'], width: 1 }, { erase: ['p'] }] }))[0],
+    ).toContain('a polyline');
+    expect(
+      messages(figureSpec({ shapes, paint: [{ stroke: ['p'], width: 1 }, { erase: ['r'] }] }))[0],
+    ).toContain('erase uses a repeat of a polyline');
+    expect(accepted(iconSpec({ shapes, paint: [{ stroke: ['r'], width: 1 }] }))).toBe(true);
+  });
+
+  it('places rect and oval as region leaves, strokes, erase targets and repeat members', () => {
+    const shapes = [
+      {
+        id: 'q',
+        type: 'rect',
+        corners: [
+          [-3, -2],
+          [3, 2],
+        ],
+      },
+      { id: 'o', type: 'oval', center: [0, 0], rx: 5, ry: 3 },
+      { id: 'rq', type: 'repeat', of: ['q', 'o'], n: 4 },
+    ];
+    expect(accepted(iconSpec({ shapes, paint: [{ fill: { union: ['q', 'o', 'rq'] } }] }))).toBe(
+      true,
+    );
+    expect(accepted(iconSpec({ shapes, paint: [{ stroke: ['q', 'o', 'rq'], width: 1 }] }))).toBe(
+      true,
+    );
+    expect(
+      accepted(
+        figureSpec({ shapes, paint: [{ stroke: ['q'], width: 1 }, { erase: ['o', 'rq'] }] }),
+      ),
+    ).toBe(true);
+  });
+
+  it('requires two rect corners and a valid radius', () => {
+    const rect = (extra: Obj) =>
+      withShape({
+        id: 'q',
+        type: 'rect',
+        corners: [
+          [0, 0],
+          [2, 2],
+        ],
+        ...extra,
+      });
+    for (const corners of [
+      [[0, 0]],
+      [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ],
+    ]) {
+      expectMessage(rect({ corners }), 'shapes.0.corners', 'an array of 2 points');
+    }
+    for (const r of [0, -1, Number.NaN]) {
+      expectRejectedAt(rect({ r }), 'shapes.0.r');
+    }
+    expect(accepted(rect({ r: 1 }))).toBe(true);
+    expect(accepted(rect({ r: 'R/2' }))).toBe(true);
+  });
+
+  it('bounds oval.rotate with the angle range', () => {
+    const oval = (rotate: number) =>
+      withShape({ id: 'o', type: 'oval', center: [0, 0], rx: 5, ry: 3, rotate });
+    expect(accepted(oval(3600))).toBe(true);
+    for (const rotate of [3601, -3601, Number.NaN]) {
+      expectMessage(oval(rotate), 'shapes.0.rotate', 'a finite number from -3600 to 3600');
+    }
+  });
+
+  it('checks references inside the new shapes', () => {
+    expectRejectedAt(
+      withShape({ id: 'q', type: 'rect', corners: ['nope', [1, 1]] }),
+      'shapes.0.corners.0',
+    );
+    expectRejectedAt(
+      withShape({ id: 'o', type: 'oval', center: [0, 0], rx: 'ghost.r', ry: 3 }),
+      'shapes.0.rx',
+    );
+    const shapes = shapeReferences(
+      specSchema.parse(
+        iconSpec({
+          shapes: [
+            { id: 'a', type: 'circle', r: 4 },
+            { id: 'p', type: 'point', at: [1, 1] },
+            { id: 'q', type: 'rect', corners: ['p', [3, 3]], r: 'a.r' },
+            { id: 'o', type: 'oval', center: 'p', rx: 'a.r', ry: 1 },
+          ],
+          paint: [{ stroke: ['q', 'o'], width: 1 }],
+        }),
+      ).shapes[2] as Shape,
+    );
+    expect(shapes).toEqual(['p', 'a']);
+  });
+
+  it('accepts cap, join and dash on stroke layers of every mode', () => {
+    expect(accepted(strokeWith({ cap: 'square', join: 'bevel', dash: [0.5, 0.25] }))).toBe(true);
+    expect(
+      accepted(figureSpec({ paint: [{ stroke: ['a'], width: 0.125, cap: 'butt', dash: [1, 1] }] })),
+    ).toBe(true);
+  });
+
+  it('rejects bad cap, join and dash values', () => {
+    for (const cap of ['flat', null, true, 1]) {
+      expectMessage(strokeWith({ cap }), 'paint.0.cap', '"round", "butt" or "square"');
+    }
+    for (const join of ['sharp', null, false, 1]) {
+      expectMessage(strokeWith({ join }), 'paint.0.join', '"round", "miter" or "bevel"');
+    }
+    const lengths = 'an array of 2 lengths: dash, gap';
+    for (const dash of [[1], [1, 1, 1], [0, 1], [1, 0], [-1, 1], [1, Number.NaN], null, 2]) {
+      expectMessage(strokeWith({ dash }), 'paint.0.dash', lengths);
+    }
+  });
+
+  it('rejects cap, join and dash on a fill layer', () => {
+    for (const key of ['cap', 'join', 'dash']) {
+      expect(accepted(markSpec({ paint: [{ fill: 'a', [key]: 'round' }] }))).toBe(false);
+      expect(accepted(iconSpec({ paint: [{ fill: 'plate', [key]: 'round' }] }))).toBe(false);
+    }
+  });
+
+  it('keeps the paint cap at 16 layers', () => {
+    const layers = (n: number) => Array.from({ length: n }, () => ({ fill: 'plate' }));
+    expect(accepted(iconSpec({ paint: layers(16) }))).toBe(true);
+    expectRejectedAt(iconSpec({ paint: layers(17) }), 'paint');
+  });
+
+  it('counts rect as 8, oval as 4 and polyline as its segments toward 256 support curves', () => {
+    const rects = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `q${i}`,
+        type: 'rect',
+        corners: [
+          [0, 0],
+          [1, 1],
+        ],
+      }));
+    // 32 rects = 256 curves
+    expect(accepted(iconSpec({ shapes: rects(32), paint: [{ fill: 'q0' }] }))).toBe(true);
+    expect(messages(iconSpec({ shapes: rects(33), paint: [{ fill: 'q0' }] }))).toEqual([
+      'too many support curves after repeat expansion (received: at least 264; allowed: at most 256)',
+    ]);
+    const ovals = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `o${i}`,
+        type: 'oval',
+        center: [0, 0],
+        rx: 3,
+        ry: 2,
+      }));
+    expect(accepted(iconSpec({ shapes: ovals(64), paint: [{ fill: 'o0' }] }))).toBe(true);
+    const lines = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `p${i}`,
+        type: 'polyline',
+        through: Array.from({ length: 32 }, (_, k) => [k, 0]),
+      }));
+    // 31 segments each: 8 polylines = 248, 9 = 279
+    const poly = (n: number) =>
+      iconSpec({ shapes: lines(n), paint: [{ stroke: ['p0'], width: 1 }] });
+    expect(accepted(poly(8))).toBe(true);
+    expectRejectedAt(poly(9), 'shapes.8');
+  });
+
+  it('checks the drawn-element cap of 2048 in an icon too', () => {
+    const shapes = [
+      ...Array.from({ length: 8 }, (_, i) => circle(`c${i}`, { r: 1 })),
+      {
+        id: 'r',
+        type: 'repeat',
+        of: ['c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'],
+        n: 12,
+        mirror: true,
+      },
+    ];
+    const layers = (n: number) => Array.from({ length: n }, () => ({ stroke: ['r'], width: 1 }));
+    // 192 curves; 10 layers draw 1920 elements, 11 draw 2112
+    expect(accepted(iconSpec({ shapes, paint: layers(10) }))).toBe(true);
+    expect(messages(iconSpec({ shapes, paint: layers(11) }))).toEqual([
+      'too many drawn elements after repeat expansion (received: at least 2112; allowed: at most 2048)',
+    ]);
+    expectRejectedAt(iconSpec({ shapes, paint: layers(11) }), 'paint.10.stroke.0');
   });
 });
