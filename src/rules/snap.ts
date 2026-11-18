@@ -1,7 +1,10 @@
+import type { Chain, ChainInput, ChainSupport } from '../geom/chain.js';
+import { buildChain, ChainError, meet } from '../geom/chain.js';
 import type { Vec } from '../geom/primitives.js';
 import { distance, lineThrough, SNAP, signedDistance } from '../geom/primitives.js';
 import { ovalArc } from '../geom/shapes.js';
-import type { Shape, SpecInput } from '../spec/schema.js';
+import type { PaintLayer, Shape, SpecInput } from '../spec/schema.js';
+import { paintReferences, shapeReferences } from '../spec/schema.js';
 import { isMultiple, pointSlots, RULES, stepAxis } from './lint.js';
 
 /** A shape whose original value was kept because snapping it would collapse the figure. */
@@ -14,7 +17,8 @@ export type SnapKept = {
     | 'flat rect'
     | 'steps too wide'
     | 'oval ratio'
-    | 'arc angle';
+    | 'arc angle'
+    | 'outline';
 };
 
 /** The snapped spec, the largest move of a point or radius, the largest seam gap left, and what was kept. */
@@ -32,6 +36,8 @@ const SEAM_MATCH = 1e-3;
 const ANGLE_SNAP = 0.5;
 const OVAL_RATIO_MAX = 4;
 const TOLERANCE = 1e-9;
+// How far a rect's r may sit from half its shorter side and still count as half-circle ends.
+const HALF_CIRCLE_MATCH = 0.05;
 const MAX_DIRECTION_FIXES = 16;
 
 // Rounds half away from zero, so mirrored inputs stay mirrored; never returns -0.
@@ -43,6 +49,7 @@ const roundShort = (v: number): number => {
   return Math.max(GRID, (v / GRID - low <= 0.5 + TOLERANCE ? low : low + 1) * GRID);
 };
 const round4 = (v: number): number => Math.round(v * 1e4) / 1e4;
+const round12 = (v: number): number => Math.round(v * 1e12) / 1e12 || 0;
 const wrapDegrees = (deg: number): number => ((deg % 360) + 360) % 360;
 const matches = (a: Xy, b: Xy, tolerance: number): boolean =>
   Math.abs(a[0] - b[0]) <= tolerance && Math.abs(a[1] - b[1]) <= tolerance;
@@ -226,7 +233,18 @@ function squash(
         return unchanged;
       }
       const half = Math.min(width, height) / 2;
-      if (shape.r > half + TOLERANCE) {
+      const [oa, ob] = original.type === 'rect' ? original.corners : [];
+      const roundEnds =
+        original.type === 'rect' &&
+        typeof original.r === 'number' &&
+        Array.isArray(oa) &&
+        Array.isArray(ob) &&
+        Math.abs(original.r - Math.min(Math.abs(ob[0] - oa[0]), Math.abs(ob[1] - oa[1])) / 2) <=
+          HALF_CIRCLE_MATCH;
+      if (roundEnds) {
+        // Half-circle ends stay half-circle ends, whatever the grid.
+        shape.r = half;
+      } else if (shape.r > half + TOLERANCE) {
         const clamped = Math.floor(half / GRID + TOLERANCE) * GRID;
         if (clamped > 0) {
           shape.r = clamped;
@@ -724,6 +742,204 @@ function stopShafts(
   }
 }
 
+type OutlineIn = Extract<InShape, { type: 'outline' }>;
+type PieceIn = OutlineIn['through'][number];
+// An outline with literal supports and corners; `supports[k]` is the shape index under piece k.
+type OutlinePlan = { index: number; supports: number[] };
+
+const onOf = (piece: PieceIn): string => (typeof piece === 'string' ? piece : piece.on);
+const cornerOf = (piece: PieceIn): unknown =>
+  typeof piece === 'string' ? undefined : piece.corner;
+
+// The chain support of a circle with a numeric centre and radius or a line with numeric ends.
+function supportOf(shape: InShape | undefined): ChainSupport | null {
+  if (shape?.type === 'circle' && typeof shape.r === 'number') {
+    const center = shape.center ?? [0, 0];
+    return Array.isArray(center)
+      ? { kind: 'circle', circle: { cx: center[0], cy: center[1], r: shape.r } }
+      : null;
+  }
+  if (shape?.type === 'line' && Array.isArray(shape.from) && Array.isArray(shape.to)) {
+    const [from, to] = [toVec(shape.from as Xy), toVec(shape.to as Xy)];
+    return distance(from, to) > SNAP ? { kind: 'line', line: lineThrough(from, to) } : null;
+  }
+  return null;
+}
+
+// Outlines whose pieces all lie on literal circles and lines, and the supports no other shape or layer names.
+function outlinePlans(
+  shapes: readonly InShape[],
+  paint: SpecInput['paint'],
+): { plans: OutlinePlan[]; dedicated: Set<number> } {
+  const at = new Map(shapes.map((shape, i) => [shape.id, i]));
+  const uses = new Map<string, number>();
+  const count = (ids: string[]): void => {
+    for (const id of ids) {
+      uses.set(id, (uses.get(id) ?? 0) + 1);
+    }
+  };
+  for (const shape of shapes) {
+    // Input shapes may omit the centre that parsing defaults to the origin.
+    const filled =
+      shape.type === 'circle' || shape.type === 'repeat'
+        ? { ...shape, center: shape.center ?? [0, 0] }
+        : shape;
+    count(shapeReferences(filled as Shape));
+  }
+  for (const layer of paint) {
+    count(paintReferences(layer as PaintLayer));
+  }
+
+  const plans: OutlinePlan[] = [];
+  const dedicated = new Set<number>();
+  shapes.forEach((shape, index) => {
+    if (shape.type !== 'outline') {
+      return;
+    }
+    const supports = shape.through.map((piece) => at.get(onOf(piece)) ?? -1);
+    const literal = shape.through.every((piece, k) => {
+      const corner = cornerOf(piece);
+      return (
+        supportOf(shapes[supports[k] as number]) !== null &&
+        (corner === undefined || Array.isArray(corner))
+      );
+    });
+    if (!literal) {
+      return;
+    }
+    plans.push({ index, supports });
+    for (const s of supports) {
+      if (uses.get((shapes[s] as InShape).id) === 1) {
+        dedicated.add(s);
+      }
+    }
+  });
+  return { plans, dedicated };
+}
+
+// Builds an outline from the given shapes and corners; null when the kernel rejects it.
+function tryChain(
+  pieces: readonly PieceIn[],
+  supports: readonly (ChainSupport | null)[],
+  corners: readonly (Xy | undefined)[],
+): Chain | null {
+  const input: ChainInput[] = [];
+  for (const [k, piece] of pieces.entries()) {
+    const support = supports[k];
+    if (support === undefined || support === null) {
+      return null;
+    }
+    const corner = corners[k];
+    const concave = typeof piece === 'string' ? false : (piece.concave ?? false);
+    input.push({ support, concave, ...(corner === undefined ? {} : { corner: toVec(corner) }) });
+  }
+  try {
+    return buildChain(input);
+  } catch (error) {
+    if (error instanceof ChainError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+// Corner hints for the rounded supports: the crossing nearest the joint before rounding, then nearest
+// the piece's entry; undefined where the supports touch once; null when a joint cannot be decided.
+function rejoinedCorners(
+  before: Chain,
+  supports: readonly (ChainSupport | null)[],
+): (Xy | undefined)[] | null {
+  const n = supports.length;
+  const corners: (Xy | undefined)[] = [];
+  for (let k = 0; k < n; k++) {
+    const [a, b] = [supports[k], supports[(k + 1) % n]];
+    if (a === null || a === undefined || b === null || b === undefined) {
+      return null;
+    }
+    const m = meet(a, b);
+    if (m.kind === 'same' || m.kind === 'none') {
+      return null;
+    }
+    if (m.kind !== 'two') {
+      corners.push(undefined);
+      continue;
+    }
+    const joint = (before.joints[k] as Chain['joints'][number]).at;
+    const entry = (before.joints[(k + n - 1) % n] as Chain['joints'][number]).at;
+    const [keyP, keyQ] = m.points.map((p) => [distance(p, joint), distance(p, entry)]) as [
+      number[],
+      number[],
+    ];
+    const pick = lexLess(keyP, keyQ) ? m.points[0] : lexLess(keyQ, keyP) ? m.points[1] : null;
+    if (pick === null) {
+      return null;
+    }
+    corners.push([round12(pick.x), round12(pick.y)]);
+  }
+  return corners;
+}
+
+// Re-decides the joints of each planned outline on the rounded supports; an outline that cannot be
+// re-joined goes back to its original pieces with its dedicated supports. Returns the reverted shapes.
+function rejoinOutlines(
+  plans: readonly OutlinePlan[],
+  dedicated: ReadonlySet<number>,
+  originals: readonly InShape[],
+  shapes: InShape[],
+  kept: SnapKept[],
+): Set<number> {
+  const reverted = new Set<number>();
+  for (const { index, supports } of plans) {
+    const original = originals[index] as OutlineIn;
+    const pieces = original.through;
+    const before = tryChain(
+      pieces,
+      supports.map((s) => supportOf(originals[s])),
+      pieces.map((piece) => cornerOf(piece) as Xy | undefined),
+    );
+    if (before === null) {
+      continue;
+    }
+    const rounded = supports.map((s) => supportOf(shapes[s]));
+    const corners = rejoinedCorners(before, rounded);
+    const after = corners === null ? null : tryChain(pieces, rounded, corners);
+    // A joint moving more than a grid step is a change of shape, not rounding.
+    const faithful =
+      after?.joints.every(
+        (joint, k) =>
+          distance(joint.at, (before.joints[k] as Chain['joints'][number]).at) <= GRID + TOLERANCE,
+      ) ?? false;
+    if (corners !== null && faithful) {
+      (shapes[index] as OutlineIn).through = pieces.map((piece, k) => {
+        const corner = corners[k];
+        if (typeof piece === 'string') {
+          return corner === undefined ? piece : { on: piece, corner };
+        }
+        const next = { ...piece };
+        delete next.corner;
+        return corner === undefined ? next : { ...next, corner };
+      });
+      continue;
+    }
+    shapes[index] = structuredClone(original);
+    const back = new Set<string>();
+    for (const s of supports) {
+      if (dedicated.has(s)) {
+        shapes[s] = structuredClone(originals[s] as InShape);
+        reverted.add(s);
+        back.add((originals[s] as InShape).id);
+      }
+    }
+    for (let k = kept.length - 1; k >= 0; k--) {
+      if (back.has((kept[k] as SnapKept).id)) {
+        kept.splice(k, 1);
+      }
+    }
+    kept.push({ id: original.id, reason: 'outline' });
+  }
+  return reverted;
+}
+
 const OVAL_END_MOVE_MAX = 0.25;
 
 const ovalIdsOf = (shapes: readonly InShape[]): Set<string> =>
@@ -930,7 +1146,9 @@ function snapAngles(
  * Numeric coordinates and radii go to multiples of 0.5 (halves away from zero), polylines that
  * rounding would make uneven get equal steps, coincident vertices move together, figures the
  * rounding collapses are kept as written or change kind, and arc ends that met a line or another
- * arc follow their seam point, with the circle re-fitted to close it. The input is not modified.
+ * arc follow their seam point, with the circle re-fitted to close it. Outline joints are decided
+ * anew on the rounded circles and lines; an outline that no longer closes keeps its original
+ * pieces and the supports only it uses. The input is not modified.
  * Throws when the spec is not an icon.
  */
 export function snapSpec(spec: SpecInput): SnapResult {
@@ -949,17 +1167,21 @@ export function snapSpec(spec: SpecInput): SnapResult {
     snapPoints(shape, table);
     snapRadii(shape);
   }
-  widenHalfTurns(originals, shapes);
-  keepDirections(originals, shapes, evened);
-  stopShafts(spec.paint, originals, shapes, evened);
+  // Supports only an outline uses are left out of the steps that move shared points together.
+  const { plans, dedicated } = outlinePlans(originals, spec.paint);
+  const free = (_: InShape, i: number): boolean => !dedicated.has(i);
+  const [freeOriginals, freeShapes] = [originals.filter(free), shapes.filter(free)];
+  widenHalfTurns(freeOriginals, freeShapes);
+  keepDirections(freeOriginals, freeShapes, evened);
+  stopShafts(spec.paint, freeOriginals, freeShapes, evened);
 
-  let moved = 0;
+  const motions: number[] = [];
   const circles = new Map<number, InShape>();
   shapes.forEach((shape, i) => {
     const original = originals[i] as InShape;
     const result = squash(shape, original, kept);
     shapes[i] = result.shape;
-    moved = Math.max(moved, motion(original, result.shape));
+    motions.push(motion(original, result.shape));
     if (result.circle !== null) {
       circles.set(i, result.circle);
     }
@@ -967,6 +1189,8 @@ export function snapSpec(spec: SpecInput): SnapResult {
   for (const [i, circle] of circles) {
     shapes[i] = circle;
   }
+  const reverted = rejoinOutlines(plans, dedicated, originals, shapes, kept);
+  const moved = Math.max(0, ...motions.filter((_, i) => !reverted.has(i)));
 
   snapOvalArcs(originals, shapes, kept);
   const angles = snapAngles(originals, shapes);

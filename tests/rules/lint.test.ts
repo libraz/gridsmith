@@ -1357,3 +1357,29 @@ describe('arc on an oval', () => {
     expect(has(wide(2.8), 'off_canvas')).toBe(false);
   });
 });
+
+describe('off_grid capsule rect', () => {
+  const bar = (r: number): SpecInput =>
+    icon(
+      [
+        {
+          id: 'bar',
+          type: 'rect',
+          corners: [
+            [-4, 5.5],
+            [8, 7],
+          ],
+          r,
+        },
+      ],
+      [iconStroke(['bar'], 1)],
+    );
+
+  it('exempts a rect radius equal to half the short side', () => {
+    expect(has(bar(0.75), 'off_grid', 'bar')).toBe(false);
+  });
+
+  it('still reports another off-grid rect radius', () => {
+    expect(has(bar(0.6), 'off_grid', 'bar')).toBe(true);
+  });
+});

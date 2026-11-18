@@ -711,6 +711,141 @@ describe('snapSpec scope', () => {
   });
 });
 
+describe('filled outlines', () => {
+  const line = (id: string, from: number[], to: number[]): Json => ({ id, type: 'line', from, to });
+  const circle = (id: string, center: number[], r: number): Json => ({
+    id,
+    type: 'circle',
+    center,
+    r,
+  });
+  const outline = (through: unknown[]): Json => ({ id: 'o', type: 'outline', through });
+  const resolves = (result: SnapResult): void => {
+    const resolved = resolveSpec(specSchema.parse(result.spec));
+    if (!resolved.ok) {
+      throw new Error(`resolve failed: ${JSON.stringify(resolved.errors)}`);
+    }
+  };
+  // Bottom line, right arc, top line, left line, counter-clockwise; the top joint is the one under test.
+  const tombstone = (
+    bottom: number,
+    top: number,
+    center: number[],
+    r: number,
+    through: unknown[],
+  ) =>
+    snap(
+      [
+        line('b', [-6, bottom], [4.5, bottom]),
+        circle('c', center, r),
+        line('t', [-6, top], [0, top]),
+        line('l', [-6, bottom], [-6, top]),
+        outline(through),
+      ],
+      { paint: [{ fill: 'o' }] },
+    );
+
+  it('keeps a tangent D shape tangent with no corners', () => {
+    // Lines y = -5.9 and 6.1 touch the circle at (-1.9, 0.1), r 6; all round to the D at (-2, 0), r 6.
+    const result = snap(
+      [
+        line('b', [-7.9, -5.9], [-1.9, -5.9]),
+        circle('a', [-1.9, 0.1], 6),
+        line('t', [-1.9, 6.1], [-7.9, 6.1]),
+        line('l', [-7.9, 6.1], [-7.9, -5.9]),
+        outline(['b', 'a', 't', 'l']),
+      ],
+      { paint: [{ fill: 'o' }] },
+    );
+    expect(shapeOf(result, 'a')).toMatchObject({ center: [-2, 0], r: 6 });
+    expect(shapeOf(result, 'b')).toMatchObject({ from: [-8, -6], to: [-2, -6] });
+    expect(shapeOf(result, 't')).toMatchObject({ from: [-2, 6], to: [-8, 6] });
+    expect(shapeOf(result, 'o').through).toEqual(['b', 'a', 't', 'l']);
+    expect(result.kept).toEqual([]);
+    resolves(result);
+  });
+
+  it('drops the corner where a crossing becomes tangent', () => {
+    // Before: y = 6.1 is 6 from (0, 0.1) < 6.01, crossing at x = +-0.347; y = -4 crosses at x = +-4.394.
+    // After: y = 6 touches (0, 0), r 6 at (0, 6); y = -4 crosses at x = +-sqrt(20).
+    // Joints move 0.078, 0.361, 0.1 and 0.
+    const result = tombstone(-4, 6.1, [0, 0.1], 6.01, [
+      { on: 'b', corner: [4.39, -4] },
+      { on: 'c', corner: [0.35, 6.1] },
+      't',
+      'l',
+    ]);
+    expect(shapeOf(result, 'c')).toMatchObject({ center: [0, 0], r: 6 });
+    expect(shapeOf(result, 'o').through).toEqual([
+      { on: 'b', corner: [4.472135955, -4] },
+      { on: 'c' },
+      't',
+      'l',
+    ]);
+    expect(result.kept).toEqual([]);
+    resolves(result);
+  });
+
+  it('reverts an outline whose joint would jump more than a grid step', () => {
+    // Before: y = 5.7 touches (0, 0.3), r 5.4 at (0, 5.7); y = -3 crosses at x = +-4.274.
+    // After: (0, 0.5), r 5.5 crosses y = 5.5 at x = +-sqrt(5.25), so the top joint moves about 2.30.
+    const through = [{ on: 'b', corner: [4.27, -3] }, 'c', 't', 'l'];
+    const result = tombstone(-3, 5.7, [0, 0.3], 5.4, through);
+    expect(shapeOf(result, 'c')).toEqual(circle('c', [0, 0.3], 5.4));
+    expect(shapeOf(result, 'b')).toEqual(line('b', [-6, -3], [4.5, -3]));
+    expect(shapeOf(result, 't')).toEqual(line('t', [-6, 5.7], [0, 5.7]));
+    expect(shapeOf(result, 'l')).toEqual(line('l', [-6, -3], [-6, 5.7]));
+    expect(shapeOf(result, 'o').through).toEqual(through);
+    expect(result.kept).toEqual([{ id: 'o', reason: 'outline' }]);
+    resolves(result);
+  });
+
+  // Circles (0, 0) and (2.3, 0), r 1.2, cross at (1.15, +-0.343); rounded to r 1 at 2.5 apart they part.
+  const lobes = [circle('p', [0, 0], 1.2), circle('q', [2.3, 0], 1.2)];
+
+  it('rounds an unrelated line that shares an end with a support of a reverted outline', () => {
+    // Left lobe down to y = -1 at x = -0.663, the line to x = 2.963, the right lobe up to (1.15, 0.343).
+    const original = line('f', [-1.2, -1], [3.4, -1]);
+    const result = snap(
+      [
+        ...lobes,
+        original,
+        line('u', [3.4, -1], [6.3, 2.1]),
+        outline([
+          { on: 'p', corner: [-0.66, -1] },
+          { on: 'f', corner: [2.96, -1] },
+          { on: 'q', corner: [1.15, 0.34] },
+        ]),
+      ],
+      {
+        paint: [{ fill: 'o' }, { stroke: ['u'], width: 1 }],
+      },
+    );
+    expect(shapeOf(result, 'f')).toEqual(original);
+    expect(shapeOf(result, 'u')).toMatchObject({ from: [3.5, -1], to: [6.5, 2] });
+    expect(result.kept).toEqual([{ id: 'o', reason: 'outline' }]);
+    resolves(result);
+  });
+
+  it('reverts an outline whose circles come apart, with its supports, and rounds the rest', () => {
+    const through = [
+      { on: 'p', corner: [1.15, -0.34] },
+      { on: 'q', corner: [1.15, 0.34] },
+    ];
+    const result = snap([...lobes, circle('x', [5.1, 5.1], 1.1), outline(through)], {
+      paint: [{ fill: 'o' }, { fill: 'x' }],
+    });
+    expect(shapeOf(result, 'p')).toEqual(lobes[0]);
+    expect(shapeOf(result, 'q')).toEqual(lobes[1]);
+    expect(shapeOf(result, 'o').through).toEqual(through);
+    expect(shapeOf(result, 'x')).toMatchObject({ center: [5, 5], r: 1 });
+    expect(result.kept).toEqual([{ id: 'o', reason: 'outline' }]);
+    // Only x moves: its centre by hypot(0.1, 0.1).
+    expect(result.moved).toBe(0.1414);
+    resolves(result);
+  });
+});
+
 describe('snapSpec result under the rules', () => {
   it('leaves no off_grid or uneven_steps violation', () => {
     const result = snap([
@@ -738,5 +873,34 @@ describe('snapSpec result under the rules', () => {
     expect(violations.filter((v) => v.rule === 'off_grid' || v.rule === 'uneven_steps')).toEqual(
       [],
     );
+  });
+});
+
+describe('snapSpec capsule rect', () => {
+  const bar = (r: number): Json => ({
+    id: 'bar',
+    type: 'rect',
+    corners: [
+      [-4.25, 5.6],
+      [8.2, 7.1],
+    ],
+    r,
+  });
+
+  it('keeps half-circle ends on a capsule rect', () => {
+    // Corners round to [-4.5, 5.5] and [8, 7]: the short side is 1.5, so r is 0.75.
+    const result = snap([bar(0.75)]);
+    expect(shapeOf(result, 'bar')).toMatchObject({
+      corners: [
+        [-4.5, 5.5],
+        [8, 7],
+      ],
+      r: 0.75,
+    });
+  });
+
+  it('rounds a capsule rect radius that is not near half the short side', () => {
+    const result = snap([bar(0.6)]);
+    expect(shapeOf(result, 'bar')).toMatchObject({ r: 0.5 });
   });
 });

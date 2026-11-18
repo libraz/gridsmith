@@ -39,7 +39,7 @@ export const RULES = {
   off_grid: {
     description:
       'Numeric point coordinates and numeric lengths (radii, rect.r, oval rx and ry) must be multiples of 0.5 module ' +
-      'in a mark and an icon and 0.25 module in a figure. Length expressions, references, widths, dashes ' +
+      '(a rect.r of half its shorter side is exempt) in a mark and an icon and 0.25 module in a figure. Length expressions, references, widths, dashes ' +
       'and anything inside near/toward are exempt. Target: the element id.',
     modes: ['mark', 'figure', 'icon'],
     gridStep: { mark: 0.5, figure: 0.25, icon: 0.5 },
@@ -271,7 +271,15 @@ function checkOffGrid(spec: Spec): Finding[] {
       test('r', shape.r);
     }
     if (shape.type === 'rect' && typeof shape.r === 'number') {
-      test('r', shape.r);
+      const [a, b] = shape.corners;
+      const halfShort =
+        Array.isArray(a) && Array.isArray(b)
+          ? Math.min(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1])) / 2
+          : null;
+      // A radius of half the shorter side is derived from the corners, not chosen.
+      if (halfShort === null || Math.abs(shape.r - halfShort) > tolerance) {
+        test('r', shape.r);
+      }
     } else if (shape.type === 'oval') {
       if (typeof shape.rx === 'number') {
         test('rx', shape.rx);

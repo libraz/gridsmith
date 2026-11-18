@@ -83,7 +83,7 @@ const MIN_LENGTH = 1e-6;
 
 const TWO_PI = 2 * Math.PI;
 
-type Meeting =
+export type Meeting =
   | { kind: 'same' }
   | { kind: 'none'; amount: number | null; contact: ChainContact }
   | { kind: 'tangent'; point: Vec; contact: ChainContact }
@@ -238,7 +238,7 @@ function unit(v: Vec): Vec {
   return scale(v, 1 / length(v));
 }
 
-function meet(a: ChainSupport, b: ChainSupport): Meeting {
+export function meet(a: ChainSupport, b: ChainSupport): Meeting {
   if (a.kind === 'circle') {
     return b.kind === 'circle' ? meetCircles(a.circle, b.circle) : meetCircleLine(a.circle, b.line);
   }
