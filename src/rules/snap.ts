@@ -1,7 +1,8 @@
 import type { Vec } from '../geom/primitives.js';
 import { distance, lineThrough, SNAP, signedDistance } from '../geom/primitives.js';
+import { ovalArc } from '../geom/shapes.js';
 import type { Shape, SpecInput } from '../spec/schema.js';
-import { pointSlots, RULES, stepAxis } from './lint.js';
+import { isMultiple, pointSlots, RULES, stepAxis } from './lint.js';
 
 /** A shape whose original value was kept because snapping it would collapse the figure. */
 export type SnapKept = {
@@ -12,7 +13,8 @@ export type SnapKept = {
     | 'collinear'
     | 'flat rect'
     | 'steps too wide'
-    | 'oval ratio';
+    | 'oval ratio'
+    | 'arc angle';
 };
 
 /** The snapped spec, the largest move of a point or radius, the largest seam gap left, and what was kept. */
@@ -30,10 +32,16 @@ const SEAM_MATCH = 1e-3;
 const ANGLE_SNAP = 0.5;
 const OVAL_RATIO_MAX = 4;
 const TOLERANCE = 1e-9;
+const MAX_DIRECTION_FIXES = 16;
 
 // Rounds half away from zero, so mirrored inputs stay mirrored; never returns -0.
 const roundGrid = (v: number): number => Math.sign(v) * Math.round(Math.abs(v) / GRID) * GRID || 0;
 const roundRadius = (v: number): number => Math.max(GRID, roundGrid(v));
+// The grid value nearest `v`, the smaller on a tie, at least one step.
+const roundShort = (v: number): number => {
+  const low = Math.floor(v / GRID + TOLERANCE);
+  return Math.max(GRID, (v / GRID - low <= 0.5 + TOLERANCE ? low : low + 1) * GRID);
+};
 const round4 = (v: number): number => Math.round(v * 1e4) / 1e4;
 const wrapDegrees = (deg: number): number => ((deg % 360) + 360) % 360;
 const matches = (a: Xy, b: Xy, tolerance: number): boolean =>
@@ -74,7 +82,12 @@ function literalThrough(shape: InShape): Xy[] | null {
 }
 
 // Gives the polylines that `uneven_steps` would flag after plain rounding equal steps; records the vertex mapping.
-function equalise(shapes: InShape[], table: Mapping[], kept: SnapKept[]): void {
+function equalise(
+  shapes: InShape[],
+  table: Mapping[],
+  kept: SnapKept[],
+  evened: Set<InShape>,
+): void {
   for (const shape of shapes) {
     const vertices = shape.type === 'polyline' ? literalThrough(shape) : null;
     if (vertices === null) {
@@ -107,6 +120,7 @@ function equalise(shapes: InShape[], table: Mapping[], kept: SnapKept[]): void {
     } else if (Math.min(start, end) < -CANVAS_HALF) {
       start += -CANVAS_HALF - Math.min(start, end);
     }
+    evened.add(shape);
     vertices.forEach((old, i) => {
       if (table.some((entry) => matches(entry.from, old, VERTEX_MATCH))) {
         return;
@@ -134,10 +148,14 @@ function snapRadii(shape: InShape): void {
       shape.r = roundRadius(shape.r);
     }
   } else if (shape.type === 'oval') {
-    if (typeof shape.rx === 'number') {
+    if (typeof shape.rx === 'number' && typeof shape.ry === 'number') {
+      const [rx, ry] = [shape.rx, shape.ry];
+      const long = roundRadius(Math.max(rx, ry));
+      const short = roundShort((long * Math.min(rx, ry)) / Math.max(rx, ry));
+      [shape.rx, shape.ry] = rx >= ry ? [long, short] : [short, long];
+    } else if (typeof shape.rx === 'number') {
       shape.rx = roundRadius(shape.rx);
-    }
-    if (typeof shape.ry === 'number') {
+    } else if (typeof shape.ry === 'number') {
       shape.ry = roundRadius(shape.ry);
     }
   }
@@ -295,8 +313,56 @@ function plainCircles(shapes: readonly InShape[]): Map<string, PlainCircle> {
   return out;
 }
 
-// Re-aims arc ends that met a line or polyline vertex, then snaps ends near an allowed angle.
-function snapAngles(originals: readonly InShape[], shapes: InShape[]): { gap: number } {
+const isAllowedAngle = (theta: number): boolean =>
+  RULES.angle.divisors.some((n) => isMultiple(theta * n, 180, RULES.angle.tolerance));
+
+// True when `key` beats `best` component by component, ties within TOLERANCE falling through.
+function lexLess(key: readonly number[], best: readonly number[]): boolean {
+  for (let k = 0; k < key.length; k++) {
+    const [a, b] = [key[k] as number, best[k] as number];
+    if (a < b - TOLERANCE) {
+      return true;
+    }
+    if (a > b + TOLERANCE) {
+      return false;
+    }
+  }
+  return false;
+}
+
+// The circle within one grid step of the rounded one that leaves the smallest worst gap at the seam points.
+function refit(before: PlainCircle, after: PlainCircle, targets: readonly Xy[]): PlainCircle {
+  const offsets = [-GRID, 0, GRID];
+  let best = after;
+  let bestKey: number[] | null = null;
+  for (const dx of offsets) {
+    for (const dy of offsets) {
+      for (const dr of offsets) {
+        const r = after.r + dr;
+        if (r < GRID - TOLERANCE) {
+          continue;
+        }
+        const center: Xy = [after.center[0] + dx, after.center[1] + dy];
+        const worst = Math.max(
+          ...targets.map((t) => Math.abs(Math.hypot(t[0] - center[0], t[1] - center[1]) - r)),
+        );
+        const key = [
+          worst,
+          Math.hypot(center[0] - before.center[0], center[1] - before.center[1]),
+          Math.abs(r - before.r),
+        ];
+        if (bestKey === null || lexLess(key, bestKey)) {
+          best = { center, r };
+          bestKey = key;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+// Line and polyline vertices as before/after pairs.
+function vertexSeams(originals: readonly InShape[], shapes: readonly InShape[]): Seam[] {
   const seams: Seam[] = [];
   originals.forEach((shape, i) => {
     if (shape.type === 'line' || shape.type === 'polyline') {
@@ -306,38 +372,548 @@ function snapAngles(originals: readonly InShape[], shapes: InShape[]): { gap: nu
       });
     }
   });
+  return seams;
+}
+
+const positionOf = (circle: PlainCircle, theta: number): Xy => {
+  const rad = (theta * Math.PI) / 180;
+  return [circle.center[0] + circle.r * Math.cos(rad), circle.center[1] + circle.r * Math.sin(rad)];
+};
+
+// The end positions and line vertices of a half turn whose two ends both meet line or polyline vertices.
+function halfTurnSeams(
+  arc: InShape,
+  circles: ReadonlyMap<string, PlainCircle>,
+  seams: readonly Seam[],
+): { ends: [Xy, Xy]; seams: [Seam, Seam] } | null {
+  if (arc.type !== 'arc' || typeof arc.from !== 'number' || typeof arc.to !== 'number') {
+    return null;
+  }
+  const circle = circles.get(arc.on);
+  if (circle === undefined || Math.abs(wrapDegrees(arc.to - arc.from) - 180) > SEAM_MATCH) {
+    return null;
+  }
+  const ends: [Xy, Xy] = [positionOf(circle, arc.from), positionOf(circle, arc.to)];
+  const s0 = seams.find((s) => matches(s.before, ends[0], SEAM_MATCH));
+  const s1 = seams.find((s) => matches(s.before, ends[1], SEAM_MATCH));
+  return s0 === undefined || s1 === undefined ? null : { ends, seams: [s0, s1] };
+}
+
+// Makes the rounded spacing of the lines a half turn joins a whole number, moving one end by half a step.
+function widenHalfTurns(originals: readonly InShape[], shapes: InShape[]): void {
+  const circles = plainCircles(originals);
+  for (const arc of originals) {
+    const seams = vertexSeams(originals, shapes);
+    const half = halfTurnSeams(arc, circles, seams);
+    if (half === null) {
+      continue;
+    }
+    const [p0, p1] = half.ends;
+    const [s0, s1] = half.seams;
+    const axis: 0 | 1 | null =
+      Math.abs(p1[0] - p0[0]) < SEAM_MATCH ? 1 : Math.abs(p1[1] - p0[1]) < SEAM_MATCH ? 0 : null;
+    if (axis === null) {
+      continue;
+    }
+    const chord = Math.abs(p1[axis] - p0[axis]);
+    const spacing = Math.abs(s1.after[axis] - s0.after[axis]);
+    if (isMultiple(spacing, 1, TOLERANCE)) {
+      continue;
+    }
+    const [lower, upper] = [spacing - GRID, spacing + GRID];
+    const target =
+      lower > TOLERANCE && Math.abs(lower - chord) < Math.abs(upper - chord) - TOLERANCE
+        ? lower
+        : upper;
+    const sign = target > spacing ? 1 : -1;
+    // The end that lands nearest its original coordinate moves; `to` wins a tie.
+    const options = [
+      { end: p0, seam: s0, other: s1 },
+      { end: p1, seam: s1, other: s0 },
+    ].map((o) => {
+      const away = Math.sign(o.seam.after[axis] - o.other.after[axis]);
+      const value = o.seam.after[axis] + sign * away * GRID;
+      return { ...o, value, off: Math.abs(value - o.end[axis]) };
+    });
+    const [first, second] = options as [(typeof options)[number], (typeof options)[number]];
+    const pick = first.off < second.off - TOLERANCE ? first : second;
+    originals.forEach((original, i) => {
+      const slots = literalSlots(shapes[i] as InShape);
+      literalSlots(original).forEach((before, k) => {
+        if (Math.abs(before[axis] - pick.end[axis]) <= SEAM_MATCH) {
+          (slots[k] as Xy)[axis] = pick.value;
+        }
+      });
+    });
+  }
+}
+
+type Direction = 'diagonal' | 'level' | 'upright';
+type Segment = { direction: Direction; before: [Xy, Xy]; key: [Xy, Xy]; live: [Xy, Xy] };
+
+function directionOf(a: Xy, b: Xy): Direction | null {
+  const dx = Math.abs(b[0] - a[0]);
+  const dy = Math.abs(b[1] - a[1]);
+  if (Math.hypot(dx, dy) <= SEAM_MATCH) {
+    return null;
+  }
+  if (dy < SEAM_MATCH) {
+    return 'level';
+  }
+  if (dx < SEAM_MATCH) {
+    return 'upright';
+  }
+  return Math.abs(dx - dy) < SEAM_MATCH ? 'diagonal' : null;
+}
+
+function isBroken({ direction, live }: Segment): boolean {
+  const dx = Math.abs(live[1][0] - live[0][0]);
+  const dy = Math.abs(live[1][1] - live[0][1]);
+  if (direction === 'diagonal') {
+    return Math.abs(dx - dy) > TOLERANCE;
+  }
+  return (direction === 'level' ? dy : dx) > TOLERANCE;
+}
+
+// Keeps segments that were diagonal, level or upright before rounding in that direction, moving a point by half a step.
+function keepDirections(
+  originals: readonly InShape[],
+  shapes: readonly InShape[],
+  evened: ReadonlySet<InShape>,
+): void {
+  const circles = plainCircles(originals);
+  const seams = vertexSeams(originals, shapes);
+  const segments: Segment[] = [];
+  const add = (before: [Xy, Xy], key: [Xy, Xy], live: [Xy, Xy]): void => {
+    const direction = directionOf(before[0], before[1]);
+    if (direction !== null) {
+      segments.push({ direction, before, key, live });
+    }
+  };
+  originals.forEach((original, i) => {
+    const shape = shapes[i] as InShape;
+    if (original.type === 'line' && shape.type === 'line') {
+      if (Array.isArray(original.from) && Array.isArray(original.to)) {
+        const [from, to] = [original.from as Xy, original.to as Xy];
+        add([from, to], [from, to], [shape.from as Xy, shape.to as Xy]);
+      }
+    } else if (original.type === 'polyline' && shape.type === 'polyline' && !evened.has(shape)) {
+      for (let k = 0; k + 1 < original.through.length; k++) {
+        const [a, b] = [original.through[k], original.through[k + 1]];
+        if (Array.isArray(a) && Array.isArray(b)) {
+          add(
+            [a as Xy, b as Xy],
+            [a as Xy, b as Xy],
+            [shape.through[k] as Xy, shape.through[k + 1] as Xy],
+          );
+        }
+      }
+    } else if (original.type === 'arc') {
+      const half = halfTurnSeams(original, circles, seams);
+      if (half !== null) {
+        const [s0, s1] = half.seams;
+        add(half.ends, [s0.before, s1.before], [s0.after, s1.after]);
+      }
+    }
+  });
+
+  const slots = originals.flatMap((original, i) => {
+    const live = literalSlots(shapes[i] as InShape);
+    return literalSlots(original).map((before, k) => ({ before, live: live[k] as Xy }));
+  });
+  // Moves every point that sat at `key` before rounding; returns the undo.
+  const shift = (key: Xy, axis: 0 | 1, value: number): (() => void) => {
+    const moved = slots.filter((slot) => matches(slot.before, key, SEAM_MATCH));
+    const old = moved.map((slot) => slot.live[axis]);
+    moved.forEach((slot) => {
+      slot.live[axis] = value;
+    });
+    return () => {
+      moved.forEach((slot, n) => {
+        slot.live[axis] = old[n] as number;
+      });
+    };
+  };
+  const count = (): number => segments.filter(isBroken).length;
+
+  const skipped = new Set<Segment>();
+  for (let fixes = 0; fixes < MAX_DIRECTION_FIXES; ) {
+    const target = segments.find(
+      (s) => s.direction === 'diagonal' && isBroken(s) && !skipped.has(s),
+    );
+    if (target === undefined) {
+      return;
+    }
+    let best: { key: number[]; end: 0 | 1; axis: 0 | 1; value: number } | null = null;
+    for (const end of [0, 1] as const) {
+      for (const axis of [0, 1] as const) {
+        for (const step of [GRID, -GRID]) {
+          const value = target.live[end][axis] + step;
+          const undo = shift(target.key[end], axis, value);
+          if (!isBroken(target)) {
+            const moved = distance(toVec(target.live[end]), toVec(target.before[end]));
+            const key = [count(), moved];
+            if (best === null || lexLess(key, best.key)) {
+              best = { key, end, axis, value };
+            }
+          }
+          undo();
+        }
+      }
+    }
+    if (best === null || best.key[0] === undefined || best.key[0] >= count()) {
+      skipped.add(target);
+    } else {
+      shift(target.key[best.end], best.axis, best.value);
+      fixes++;
+    }
+  }
+}
+
+const DEFAULT_COLOR = '#000000';
+
+function edgeDistance(p: Xy, a: Xy, b: Xy): number {
+  const [sx, sy] = [b[0] - a[0], b[1] - a[1]];
+  const length2 = sx * sx + sy * sy;
+  const t =
+    length2 === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((p[0] - a[0]) * sx + (p[1] - a[1]) * sy) / length2));
+  return Math.hypot(p[0] - (a[0] + t * sx), p[1] - (a[1] + t * sy));
+}
+
+// True when `p` lies inside the polygon and farther than TOLERANCE from every edge.
+function insidePolygon(p: Xy, polygon: readonly Xy[]): boolean {
+  let inside = false;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i] as Xy;
+    const b = polygon[(i + 1) % polygon.length] as Xy;
+    if (edgeDistance(p, a, b) <= TOLERANCE) {
+      return false;
+    }
+    if (
+      a[1] > p[1] !== b[1] > p[1] &&
+      p[0] < a[0] + ((p[1] - a[1]) * (b[0] - a[0])) / (b[1] - a[1])
+    ) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// The point where the segment from `q` to `p` meets the polygon boundary nearest `p`, if any.
+function boundaryCrossing(q: Xy, p: Xy, polygon: readonly Xy[]): Xy | null {
+  const [rx, ry] = [p[0] - q[0], p[1] - q[1]];
+  let best = -1;
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i] as Xy;
+    const b = polygon[(i + 1) % polygon.length] as Xy;
+    const [sx, sy] = [b[0] - a[0], b[1] - a[1]];
+    const denom = rx * sy - ry * sx;
+    if (Math.abs(denom) < 1e-12) {
+      continue;
+    }
+    const t = ((a[0] - q[0]) * sy - (a[1] - q[1]) * sx) / denom;
+    const u = ((a[0] - q[0]) * ry - (a[1] - q[1]) * rx) / denom;
+    if (t >= -TOLERANCE && t <= 1 + TOLERANCE && u >= -TOLERANCE && u <= 1 + TOLERANCE) {
+      best = Math.max(best, t);
+    }
+  }
+  return best < 0 ? null : [q[0] + best * rx, q[1] + best * ry];
+}
+
+// Stops a stroked shaft at the base of a same-coloured filled polygon its end runs into.
+function stopShafts(
+  paint: SpecInput['paint'],
+  originals: readonly InShape[],
+  shapes: readonly InShape[],
+  evened: ReadonlySet<InShape>,
+): void {
+  const slots = originals.flatMap((original, i) => {
+    const live = literalSlots(shapes[i] as InShape);
+    return literalSlots(original).map((before, k) => ({ before, live: live[k] as Xy }));
+  });
+  for (const layer of paint) {
+    if (!('stroke' in layer)) {
+      continue;
+    }
+    const color = layer.color ?? DEFAULT_COLOR;
+    const polygons = paint.flatMap((other) => {
+      if (
+        !('fill' in other) ||
+        typeof other.fill !== 'string' ||
+        (other.color ?? DEFAULT_COLOR) !== color
+      ) {
+        return [];
+      }
+      const heads = shapes.filter((shape) => shape.id === other.fill && shape.type === 'points');
+      return heads.flatMap((shape) => {
+        const vertices = literalThrough(shape);
+        return vertices === null ? [] : [vertices];
+      });
+    });
+    if (polygons.length === 0) {
+      continue;
+    }
+    for (const id of layer.stroke) {
+      const at = shapes.findIndex((shape) => shape.id === id);
+      const shape = shapes[at];
+      const original = originals[at];
+      // Each pair is an end point with the neighbouring vertex it is joined to.
+      const ends: { end: Xy; before: Xy; neighbour: Xy }[] = [];
+      if (shape?.type === 'line' && original?.type === 'line') {
+        if (
+          Array.isArray(shape.from) &&
+          Array.isArray(shape.to) &&
+          Array.isArray(original.from) &&
+          Array.isArray(original.to)
+        ) {
+          ends.push({
+            end: shape.from as Xy,
+            before: original.from as Xy,
+            neighbour: shape.to as Xy,
+          });
+          ends.push({
+            end: shape.to as Xy,
+            before: original.to as Xy,
+            neighbour: shape.from as Xy,
+          });
+        }
+      } else if (
+        shape?.type === 'polyline' &&
+        original?.type === 'polyline' &&
+        !evened.has(shape)
+      ) {
+        const last = shape.through.length - 1;
+        const pairs: [number, number][] = [
+          [0, 1],
+          [last, last - 1],
+        ];
+        for (const [e, n] of pairs) {
+          const [end, neighbour, before] = [
+            shape.through[e],
+            shape.through[n],
+            original.through[e],
+          ];
+          if (Array.isArray(end) && Array.isArray(neighbour) && Array.isArray(before)) {
+            ends.push({ end: end as Xy, before: before as Xy, neighbour: neighbour as Xy });
+          }
+        }
+      }
+      for (const { end, before, neighbour } of ends) {
+        for (const polygon of polygons) {
+          if (!insidePolygon(end, polygon) || insidePolygon(neighbour, polygon)) {
+            continue;
+          }
+          const crossing = boundaryCrossing(neighbour, end, polygon);
+          if (
+            crossing === null ||
+            !isMultiple(crossing[0], GRID, TOLERANCE) ||
+            !isMultiple(crossing[1], GRID, TOLERANCE) ||
+            matches(crossing, neighbour, TOLERANCE) ||
+            slots.filter((slot) => matches(slot.before, before, SEAM_MATCH)).length > 1
+          ) {
+            continue;
+          }
+          end[0] = roundGrid(crossing[0]);
+          end[1] = roundGrid(crossing[1]);
+          break;
+        }
+      }
+    }
+  }
+}
+
+const OVAL_END_MOVE_MAX = 0.25;
+
+const ovalIdsOf = (shapes: readonly InShape[]): Set<string> =>
+  new Set(shapes.flatMap((s) => (s.type === 'oval' ? [s.id] : [])));
+
+// The point seen from the centre at `theta` degrees on a rounded oval or circle, or null when not numeric.
+function edgePoint(shape: InShape | undefined, theta: number): Vec | null {
+  const rad = (wrapDegrees(theta) * Math.PI) / 180;
+  if (shape?.type === 'circle' && typeof shape.r === 'number') {
+    const [cx, cy] = Array.isArray(shape.center) ? shape.center : [0, 0];
+    return {
+      x: (cx as number) + shape.r * Math.cos(rad),
+      y: (cy as number) + shape.r * Math.sin(rad),
+    };
+  }
+  if (
+    shape?.type === 'oval' &&
+    Array.isArray(shape.center) &&
+    typeof shape.rx === 'number' &&
+    typeof shape.ry === 'number' &&
+    typeof (shape.rotate ?? 0) === 'number'
+  ) {
+    const center = toVec(shape.center as Xy);
+    const turn = (Number(shape.rotate ?? 0) * Math.PI) / 180;
+    return ovalArc(center, shape.rx, shape.ry, turn, rad, rad + Math.PI)[0]?.start ?? null;
+  }
+  return null;
+}
+
+// The allowed angle nearest `theta`; the smaller one on a tie.
+function nearestAllowed(theta: number): number {
+  let best = theta;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const n of RULES.angle.divisors) {
+    const unit = 180 / n;
+    const low = Math.floor(theta / unit);
+    for (const candidate of [low * unit, (low + 1) * unit]) {
+      const diff = Math.abs(theta - candidate);
+      if (diff < bestDiff - TOLERANCE || (diff <= bestDiff + TOLERANCE && candidate < best)) {
+        best = candidate;
+        bestDiff = diff;
+      }
+    }
+  }
+  return best;
+}
+
+// Moves the numeric ends of arcs that sat on an oval to the nearest allowed angle, unless the end moves too far.
+function snapOvalArcs(originals: readonly InShape[], shapes: InShape[], kept: SnapKept[]): void {
+  const ovals = ovalIdsOf(originals);
+  originals.forEach((original, i) => {
+    const shape = shapes[i];
+    if (original.type !== 'arc' || shape?.type !== 'arc' || !ovals.has(original.on)) {
+      return;
+    }
+    const target = shapes.find((s) => s.id === original.on);
+    const place = (end: typeof original.from): typeof original.from | null => {
+      if (typeof end !== 'number') {
+        return end;
+      }
+      const to = nearestAllowed(end);
+      const [a, b] = [edgePoint(target, end), edgePoint(target, to)];
+      if (a === null || b === null) {
+        return end;
+      }
+      return distance(a, b) > OVAL_END_MOVE_MAX + TOLERANCE ? null : round4(to);
+    };
+    const from = place(original.from);
+    const to = place(original.to);
+    const coincide =
+      typeof from === 'number' && typeof to === 'number' && wrapDegrees(from - to) <= TOLERANCE;
+    if (from === null || to === null || coincide) {
+      kept.push({ id: original.id, reason: 'arc angle' });
+    }
+    shape.from = from === null || coincide ? original.from : from;
+    shape.to = to === null || coincide ? original.to : to;
+  });
+}
+
+type ArcEnd = { index: number; pos: Xy };
+
+// Re-fits circles that carry seams, re-aims arc ends at the seam points, then snaps ends near an allowed angle.
+function snapAngles(
+  originals: readonly InShape[],
+  shapes: InShape[],
+): { gap: number; moved: number } {
+  const seams = vertexSeams(originals, shapes);
   const circlesBefore = plainCircles(originals);
   const circlesAfter = plainCircles(shapes);
+  const positionOf = (circle: PlainCircle, theta: number): Xy => {
+    const rad = (theta * Math.PI) / 180;
+    return [
+      circle.center[0] + circle.r * Math.cos(rad),
+      circle.center[1] + circle.r * Math.sin(rad),
+    ];
+  };
+  const seamAt = (end: Xy): Seam | undefined =>
+    seams.find((s) => matches(s.before, end, SEAM_MATCH));
+
+  // Arc ends that meet another arc and no line vertex become seams at the rounded joint.
+  const ends: ArcEnd[] = [];
+  originals.forEach((shape, i) => {
+    const circle = shape.type === 'arc' ? circlesBefore.get(shape.on) : undefined;
+    if (shape.type !== 'arc' || circle === undefined || shapes[i]?.type !== 'arc') {
+      return;
+    }
+    for (const theta of [shape.from, shape.to]) {
+      if (typeof theta === 'number') {
+        ends.push({ index: i, pos: positionOf(circle, theta) });
+      }
+    }
+  });
+  for (const end of ends) {
+    if (
+      seamAt(end.pos) === undefined &&
+      ends.some((o) => o.index !== end.index && matches(o.pos, end.pos, SEAM_MATCH))
+    ) {
+      seams.push({ before: end.pos, after: [roundGrid(end.pos[0]), roundGrid(end.pos[1])] });
+    }
+  }
+
+  // Choose each seam-bearing circle anew from the candidates around its rounded value.
+  const targets = new Map<string, Xy[]>();
+  for (const end of ends) {
+    const arc = originals[end.index];
+    const seam = seamAt(end.pos);
+    if (arc?.type === 'arc' && seam !== undefined) {
+      targets.set(arc.on, [...(targets.get(arc.on) ?? []), seam.after]);
+    }
+  }
+  let moved = 0;
+  for (const [id, points] of targets) {
+    const before = circlesBefore.get(id);
+    const after = circlesAfter.get(id);
+    const shape = shapes.find((s) => s.id === id);
+    if (before === undefined || after === undefined || shape?.type !== 'circle') {
+      continue;
+    }
+    const chosen = refit(before, after, points);
+    if (chosen === after) {
+      continue;
+    }
+    if (shape.center !== undefined || chosen.center[0] !== 0 || chosen.center[1] !== 0) {
+      shape.center = chosen.center;
+    }
+    shape.r = chosen.r;
+    circlesAfter.set(id, chosen);
+    moved = Math.max(
+      moved,
+      Math.hypot(chosen.center[0] - before.center[0], chosen.center[1] - before.center[1]),
+      Math.abs(chosen.r - before.r),
+    );
+  }
+
+  const ovals = ovalIdsOf(originals);
   let gap = 0;
   originals.forEach((original, i) => {
     const shape = shapes[i];
-    if (original.type !== 'arc' || shape?.type !== 'arc') {
+    if (original.type !== 'arc' || shape?.type !== 'arc' || ovals.has(original.on)) {
       return;
     }
     const before = circlesBefore.get(original.on);
     const after = circlesAfter.get(original.on);
     const gaps: number[] = [];
-    const aim = (theta: number): number => {
-      if (before === undefined || after === undefined) {
-        return theta;
+    const place = (end: typeof original.from): typeof original.from => {
+      if (typeof end !== 'number') {
+        return end;
       }
-      const rad = (theta * Math.PI) / 180;
-      const end: Xy = [
-        before.center[0] + before.r * Math.cos(rad),
-        before.center[1] + before.r * Math.sin(rad),
-      ];
-      const seam = seams.find((s) => matches(s.before, end, SEAM_MATCH));
-      if (seam === undefined) {
-        return theta;
+      let theta = end;
+      let seam: Seam | undefined;
+      let closed = false;
+      if (before !== undefined && after !== undefined) {
+        seam = seamAt(positionOf(before, end));
+        if (seam !== undefined) {
+          const dx = seam.after[0] - after.center[0];
+          const dy = seam.after[1] - after.center[1];
+          const off = Math.abs(Math.hypot(dx, dy) - after.r);
+          gaps.push(off);
+          closed = off <= TOLERANCE;
+          const wrapped = round4(wrapDegrees((Math.atan2(dy, dx) * 180) / Math.PI));
+          theta = wrapped >= 360 ? 0 : wrapped;
+        }
       }
-      const dx = seam.after[0] - after.center[0];
-      const dy = seam.after[1] - after.center[1];
-      gaps.push(Math.abs(Math.hypot(dx, dy) - after.r));
-      const wrapped = round4(wrapDegrees((Math.atan2(dy, dx) * 180) / Math.PI));
-      return wrapped >= 360 ? 0 : wrapped;
+      theta = snapAngle(theta);
+      return seam !== undefined && closed && !isAllowedAngle(theta)
+        ? [seam.after[0], seam.after[1]]
+        : theta;
     };
-    const from = typeof original.from === 'number' ? snapAngle(aim(original.from)) : original.from;
-    const to = typeof original.to === 'number' ? snapAngle(aim(original.to)) : original.to;
+    const from = place(original.from);
+    const to = place(original.to);
     if (typeof from === 'number' && typeof to === 'number' && wrapDegrees(from - to) <= TOLERANCE) {
       return;
     }
@@ -345,7 +921,7 @@ function snapAngles(originals: readonly InShape[], shapes: InShape[]): { gap: nu
     shape.to = to;
     gap = Math.max(gap, ...gaps);
   });
-  return { gap };
+  return { gap, moved };
 }
 
 /**
@@ -353,8 +929,9 @@ function snapAngles(originals: readonly InShape[], shapes: InShape[]): { gap: nu
  *
  * Numeric coordinates and radii go to multiples of 0.5 (halves away from zero), polylines that
  * rounding would make uneven get equal steps, coincident vertices move together, figures the
- * rounding collapses are kept as written or change kind, and arc ends that met a line follow
- * their vertex. The input is not modified. Throws when the spec is not an icon.
+ * rounding collapses are kept as written or change kind, and arc ends that met a line or another
+ * arc follow their seam point, with the circle re-fitted to close it. The input is not modified.
+ * Throws when the spec is not an icon.
  */
 export function snapSpec(spec: SpecInput): SnapResult {
   if (spec.mode !== 'icon') {
@@ -366,11 +943,15 @@ export function snapSpec(spec: SpecInput): SnapResult {
   const kept: SnapKept[] = [];
   const table: Mapping[] = [];
 
-  equalise(shapes, table, kept);
+  const evened = new Set<InShape>();
+  equalise(shapes, table, kept, evened);
   for (const shape of shapes) {
     snapPoints(shape, table);
     snapRadii(shape);
   }
+  widenHalfTurns(originals, shapes);
+  keepDirections(originals, shapes, evened);
+  stopShafts(spec.paint, originals, shapes, evened);
 
   let moved = 0;
   const circles = new Map<number, InShape>();
@@ -387,6 +968,12 @@ export function snapSpec(spec: SpecInput): SnapResult {
     shapes[i] = circle;
   }
 
-  const { gap } = snapAngles(originals, shapes);
-  return { spec: out, moved: round4(moved), gap: round4(gap), kept };
+  snapOvalArcs(originals, shapes, kept);
+  const angles = snapAngles(originals, shapes);
+  return {
+    spec: out,
+    moved: round4(Math.max(moved, angles.moved)),
+    gap: round4(angles.gap),
+    kept,
+  };
 }
