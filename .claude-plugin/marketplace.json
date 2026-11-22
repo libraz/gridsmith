@@ -13,7 +13,7 @@
       "name": "gridsmith",
       "source": "./",
       "description": "MCP server that draws logo marks, magic-circle figures and 24-unit UI icons from a JSON construction spec.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "homepage": "https://github.com/libraz/gridsmith",
       "license": "Apache-2.0",
       "keywords": ["mcp", "svg", "logo", "icon", "geometry", "magic-circle"]

@@ -1,6 +1,6 @@
 {
   "name": "@libraz/gridsmith",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Geometric SVG logo, icon and magic-circle generator: a TypeScript library and MCP server that solves a JSON construction spec, lints it and renders SVG and PNG.",
   "keywords": [
     "mcp",
