@@ -226,13 +226,17 @@ describe('gridsmith_render', () => {
   ];
 
   const expectInkOnOpaque = (rgba: Uint8Array) => {
+    let translucent = 0;
     let inked = false;
     for (let i = 0; i < rgba.length; i += 4) {
-      expect(rgba[i + 3]).toBe(255);
+      if (rgba[i + 3] !== 255) {
+        translucent++;
+      }
       if (rgba[i] !== rgba[0] || rgba[i + 1] !== rgba[1] || rgba[i + 2] !== rgba[2]) {
         inked = true;
       }
     }
+    expect(translucent).toBe(0);
     expect(inked).toBe(true);
   };
 
